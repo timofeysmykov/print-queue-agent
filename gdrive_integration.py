@@ -48,21 +48,23 @@ class GoogleDriveIntegration:
         self.local_data_path = Path(local_data_folder)
         self.local_data_path.mkdir(exist_ok=True, parents=True)
         
-        # Получение учетных данных
-        self.service_account_key = os.getenv("GOOGLE_DRIVE_KEY")
+        # Получение пути к файлу ключа
+        self.key_file_path = os.getenv("GOOGLE_DRIVE_KEY_PATH")
         
-        if not self.service_account_key:
-            logger.error("Отсутствуют учетные данные Google Drive API")
-            raise ValueError("Необходимо указать GOOGLE_DRIVE_KEY в .env файле")
+        if not self.key_file_path:
+            logger.error("Отсутствует путь к файлу ключа Google Drive API")
+            raise ValueError("Необходимо указать GOOGLE_DRIVE_KEY_PATH в .env файле")
+        
+        # Проверка существования файла ключа
+        if not os.path.exists(self.key_file_path):
+            logger.error(f"Файл ключа не найден: {self.key_file_path}")
+            raise FileNotFoundError(f"Файл ключа не найден: {self.key_file_path}")
         
         # Инициализация клиента Google Drive
         try:
-            # Преобразуем строку JSON в словарь
-            key_info = json.loads(self.service_account_key)
-            
-            # Создаем учетные данные
-            self.credentials = service_account.Credentials.from_service_account_info(
-                key_info, 
+            # Создаем учетные данные из файла
+            self.credentials = service_account.Credentials.from_service_account_file(
+                self.key_file_path,
                 scopes=['https://www.googleapis.com/auth/drive']
             )
             
