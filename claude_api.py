@@ -52,7 +52,7 @@ class ClaudeAPIClient:
         }
         
         # Параметры по умолчанию
-        self.default_model = "claude-3-5-sonnet-20240620"
+        self.default_model = "claude-3-haiku-20240307"
         self.default_max_tokens = 1000
         self.default_temperature = 0.1
         
@@ -221,7 +221,7 @@ class ClaudeAPIClient:
             # Отправка запроса к Claude API
             response = self.process_prompt(
                 prompt=prompt,
-                model="claude-3-5-sonnet-20240620",
+                model="claude-3-haiku-20240307",
                 max_tokens=1000,
                 temperature=0.1
             )
