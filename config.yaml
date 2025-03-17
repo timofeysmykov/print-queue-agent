@@ -1,0 +1,49 @@
+# Настройки Microsoft Graph API
+microsoft:
+  scopes:
+    - Files.ReadWrite.All
+    - User.Read
+
+# Настройки LLM
+llm:
+  provider: "claude"  # или "openai"
+  model: "claude-3-haiku-20240307"  # или "gpt-4o-mini"
+  max_tokens: 1000
+  temperature: 0.1
+
+# Настройки очереди печати
+queue:
+  priority_factors:
+    deadline_weight: 0.7
+    customer_priority_weight: 0.3
+  emergency_threshold_days: 3  # срочный заказ, если до дедлайна <= 3 дня
+
+# Настройки файлов
+files:
+  onedrive_orders_path: "/Print/orders.xlsx"
+  onedrive_queue_path: "/Print/queue.xlsx"
+  onedrive_techlists_folder: "/Print/Techlists/"
+  local_data_folder: "data/"
+
+# Настройки Telegram-бота
+telegram:
+  # Токен бота можно указать здесь или в переменной окружения TELEGRAM_BOT_TOKEN
+  token: "" # Замените на свой токен
+  
+  # ID чатов администраторов, которые имеют полный доступ к боту
+  admin_chat_ids: 
+    - 123456789 # Замените на реальные ID
+  
+  # Периодичность проверки новых заказов в минутах
+  check_interval_minutes: 30
+  
+  # Отправка ежедневного отчета
+  send_daily_summary: true
+  daily_summary_time: "18:00"
+  
+  # Список команд, доступных всем пользователям
+  public_commands:
+    - "start"
+    - "help"
+    - "new_order"
+    - "status"
