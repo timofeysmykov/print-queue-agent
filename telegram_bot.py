@@ -8,8 +8,9 @@ Telegram-бот для взаимодействия с агентом очере
 
 import logging
 import os
-from telegram import Update, ParseMode
-from telegram.ext import Updater, CommandHandler, MessageHandler, Filters, CallbackContext, ConversationHandler
+from telegram import Update
+from telegram.constants import ParseMode
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, ConversationHandler
 
 # Настройка логирования
 logging.basicConfig(
@@ -33,8 +34,8 @@ class TelegramNotifier:
         """
         self.token = token
         self.chat_ids = chat_ids or []
-        self.updater = Updater(token=token)
-        self.bot = self.updater.bot
+        self.application = Application.builder().token(token).build()
+        self.bot = self.application.bot
         
     def send_notification(self, message, chat_id=None):
         """
@@ -119,9 +120,8 @@ class TelegramBot:
         self.data_processor = data_processor
         self.queue_manager = queue_manager
         
-        # Создаем Updater и передаем ему токен бота
-        self.updater = Updater(token=token)
-        self.dispatcher = self.updater.dispatcher
+        # Создаем Application и передаем ему токен бота
+        self.application = Application.builder().token(token).build()
         
         # Регистрируем обработчики команд
         self._register_handlers()
@@ -132,56 +132,53 @@ class TelegramBot:
     def _register_handlers(self):
         """Регистрирует обработчики команд бота"""
         # Базовые команды
-        self.dispatcher.add_handler(CommandHandler("start", self.cmd_start))
-        self.dispatcher.add_handler(CommandHandler("help", self.cmd_help))
+        self.application.add_handler(CommandHandler("start", self.cmd_start))
+        self.application.add_handler(CommandHandler("help", self.cmd_help))
         
         # Команды управления заказами
-        self.dispatcher.add_handler(CommandHandler("queue", self.cmd_queue))
-        self.dispatcher.add_handler(CommandHandler("status", self.cmd_status))
+        self.application.add_handler(CommandHandler("queue", self.cmd_queue))
+        self.application.add_handler(CommandHandler("status", self.cmd_status))
         
         # Обработчик разговора для создания нового заказа
         conv_handler = ConversationHandler(
             entry_points=[CommandHandler("new_order", self.cmd_new_order)],
             states={
-                WAIT_ORDER_TEXT: [MessageHandler(Filters.text & ~Filters.command, self.process_order_text)],
+                WAIT_ORDER_TEXT: [MessageHandler(filters.TEXT & ~filters.COMMAND, self.process_order_text)],
                 WAIT_CONFIRM: [
-                    MessageHandler(Filters.regex('^(Да|да)$'), self.confirm_order),
-                    MessageHandler(Filters.regex('^(Нет|нет)$'), self.cancel_order),
+                    MessageHandler(filters.Regex('^(Да|да)$'), self.confirm_order),
+                    MessageHandler(filters.Regex('^(Нет|нет)$'), self.cancel_order),
                 ]
             },
             fallbacks=[CommandHandler("cancel", self.cancel_order)]
         )
-        self.dispatcher.add_handler(conv_handler)
+        self.application.add_handler(conv_handler)
         
         # Обработчик неизвестных команд
-        self.dispatcher.add_handler(MessageHandler(Filters.command, self.unknown_command))
+        self.application.add_handler(MessageHandler(filters.COMMAND, self.unknown_command))
         
         # Обработчик любых других сообщений
-        self.dispatcher.add_handler(MessageHandler(Filters.text & ~Filters.command, self.echo))
+        self.application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.echo))
         
     def start(self):
         """Запускает бота"""
         # Запускаем бота
-        self.updater.start_polling()
+        self.application.run_polling()
         logger.info("Бот запущен")
-        
-        # Продолжаем работу бота до остановки
-        self.updater.idle()
         
     def is_admin(self, user_id):
         """Проверяет, является ли пользователь администратором"""
         return user_id in self.admin_ids
         
     # Обработчики команд
-    def cmd_start(self, update: Update, context: CallbackContext):
+    async def cmd_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Обрабатывает команду /start"""
         user = update.effective_user
-        update.message.reply_text(
+        await update.message.reply_text(
             f'Привет, {user.first_name}! Я бот для управления очередью печати. '
             'Используйте /help для получения списка доступных команд.'
         )
     
-    def cmd_help(self, update: Update, context: CallbackContext):
+    async def cmd_help(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Обрабатывает команду /help"""
         help_text = """
         <b>Доступные команды:</b>
@@ -193,16 +190,16 @@ class TelegramBot:
         
         Для создания нового заказа введите /new_order и следуйте инструкциям.
         """
-        update.message.reply_text(help_text, parse_mode=ParseMode.HTML)
+        await update.message.reply_text(help_text, parse_mode=ParseMode.HTML)
     
-    def cmd_queue(self, update: Update, context: CallbackContext):
+    async def cmd_queue(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Обрабатывает команду /queue - показывает текущую очередь печати"""
         if not self.is_admin(update.effective_user.id):
-            update.message.reply_text("У вас нет прав для просмотра очереди.")
+            await update.message.reply_text("У вас нет прав для просмотра очереди.")
             return
             
         if not self.queue_manager:
-            update.message.reply_text("Менеджер очереди не инициализирован.")
+            await update.message.reply_text("Менеджер очереди не инициализирован.")
             return
             
         try:
@@ -210,7 +207,7 @@ class TelegramBot:
             queue = self.queue_manager.get_current_queue()
             
             if not queue:
-                update.message.reply_text("Очередь пуста.")
+                await update.message.reply_text("Очередь пуста.")
                 return
                 
             # Формируем сообщение с информацией о заказах
@@ -224,21 +221,21 @@ class TelegramBot:
                     message += f"   Срок: {order['deadline']}\n"
                 message += "\n"
                 
-            update.message.reply_text(message, parse_mode=ParseMode.HTML)
+            await update.message.reply_text(message, parse_mode=ParseMode.HTML)
         except Exception as e:
             logger.error(f"Ошибка при получении очереди: {str(e)}")
-            update.message.reply_text(f"Произошла ошибка: {str(e)}")
+            await update.message.reply_text(f"Произошла ошибка: {str(e)}")
     
-    def cmd_status(self, update: Update, context: CallbackContext):
+    async def cmd_status(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Обрабатывает команду /status ID - проверяет статус заказа по ID"""
         if not context.args:
-            update.message.reply_text("Пожалуйста, укажите ID заказа: /status ID")
+            await update.message.reply_text("Пожалуйста, укажите ID заказа: /status ID")
             return
             
         order_id = context.args[0]
         
         if not self.queue_manager:
-            update.message.reply_text("Менеджер очереди не инициализирован.")
+            await update.message.reply_text("Менеджер очереди не инициализирован.")
             return
             
         try:
@@ -246,7 +243,7 @@ class TelegramBot:
             order = self.queue_manager.get_order_by_id(order_id)
             
             if not order:
-                update.message.reply_text(f"Заказ с ID {order_id} не найден.")
+                await update.message.reply_text(f"Заказ с ID {order_id} не найден.")
                 return
                 
             # Формируем сообщение с информацией о заказе
@@ -263,26 +260,26 @@ class TelegramBot:
             if 'quantity' in order:
                 message += f"<b>Количество:</b> {order['quantity']}\n"
                 
-            update.message.reply_text(message, parse_mode=ParseMode.HTML)
+            await update.message.reply_text(message, parse_mode=ParseMode.HTML)
         except Exception as e:
             logger.error(f"Ошибка при получении информации о заказе: {str(e)}")
-            update.message.reply_text(f"Произошла ошибка: {str(e)}")
+            await update.message.reply_text(f"Произошла ошибка: {str(e)}")
     
-    def cmd_new_order(self, update: Update, context: CallbackContext):
+    async def cmd_new_order(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Начинает процесс создания нового заказа"""
-        update.message.reply_text(
+        await update.message.reply_text(
             "Пожалуйста, отправьте описание заказа в свободной форме. "
             "Включите информацию о клиенте, контактных данных, типе печати, "
             "сроках и любых особых требованиях."
         )
         return WAIT_ORDER_TEXT
     
-    def process_order_text(self, update: Update, context: CallbackContext):
+    async def process_order_text(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Обрабатывает текст заказа от пользователя"""
         order_text = update.message.text
         context.user_data['order_text'] = order_text
         
-        update.message.reply_text("Обрабатываю информацию о заказе...")
+        await update.message.reply_text("Обрабатываю информацию о заказе...")
         
         try:
             if self.data_processor:
@@ -308,28 +305,28 @@ class TelegramBot:
                     
                 message += "\n<b>Всё верно? (Да/Нет)</b>"
                 
-                update.message.reply_text(message, parse_mode=ParseMode.HTML)
+                await update.message.reply_text(message, parse_mode=ParseMode.HTML)
                 return WAIT_CONFIRM
             else:
-                update.message.reply_text(
+                await update.message.reply_text(
                     "Не удалось обработать заказ: процессор данных не инициализирован. "
                     "Попробуйте позже или обратитесь к администратору."
                 )
                 return ConversationHandler.END
         except Exception as e:
             logger.error(f"Ошибка при обработке заказа: {str(e)}")
-            update.message.reply_text(
+            await update.message.reply_text(
                 f"Произошла ошибка при обработке заказа: {str(e)}\n"
                 "Пожалуйста, попробуйте позже или свяжитесь с администратором."
             )
             return ConversationHandler.END
     
-    def confirm_order(self, update: Update, context: CallbackContext):
+    async def confirm_order(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Подтверждает создание заказа"""
         order_data = context.user_data.get('order_data')
         
         if not order_data:
-            update.message.reply_text("Информация о заказе отсутствует. Пожалуйста, начните заново с /new_order")
+            await update.message.reply_text("Информация о заказе отсутствует. Пожалуйста, начните заново с /new_order")
             return ConversationHandler.END
             
         try:
@@ -337,41 +334,41 @@ class TelegramBot:
                 # Добавляем заказ в очередь
                 order_id = self.queue_manager.add_order(order_data)
                 
-                update.message.reply_text(
+                await update.message.reply_text(
                     f"Заказ успешно создан с ID: {order_id}\n"
                     f"Вы можете проверить его статус командой /status {order_id}"
                 )
             else:
-                update.message.reply_text(
+                await update.message.reply_text(
                     "Не удалось добавить заказ: менеджер очереди не инициализирован. "
                     "Заказ сохранен в системе, но не добавлен в очередь."
                 )
         except Exception as e:
             logger.error(f"Ошибка при добавлении заказа: {str(e)}")
-            update.message.reply_text(f"Произошла ошибка при добавлении заказа: {str(e)}")
+            await update.message.reply_text(f"Произошла ошибка при добавлении заказа: {str(e)}")
             
         # Очищаем данные пользователя
         context.user_data.clear()
         return ConversationHandler.END
     
-    def cancel_order(self, update: Update, context: CallbackContext):
+    async def cancel_order(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Отменяет создание заказа"""
-        update.message.reply_text(
+        await update.message.reply_text(
             "Создание заказа отменено. Вы можете начать заново с команды /new_order"
         )
         # Очищаем данные пользователя
         context.user_data.clear()
         return ConversationHandler.END
     
-    def unknown_command(self, update: Update, context: CallbackContext):
+    async def unknown_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Обрабатывает неизвестные команды"""
-        update.message.reply_text(
+        await update.message.reply_text(
             "Неизвестная команда. Используйте /help для получения списка доступных команд."
         )
     
-    def echo(self, update: Update, context: CallbackContext):
+    async def echo(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Отвечает на обычные сообщения"""
-        update.message.reply_text(
+        await update.message.reply_text(
             "Я понимаю только команды. Используйте /help для получения списка доступных команд."
         )
 
