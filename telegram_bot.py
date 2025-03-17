@@ -597,9 +597,25 @@ class TelegramBot:
     async def echo(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Отвечает на обычные сообщения и обрабатывает текстовые кнопки"""
         text = update.message.text
+        chat_id = update.effective_chat.id
+        
+        # Проверяем, находится ли пользователь в режиме диалога с AI
+        # Если да, то передаем сообщение в обработчик диалога с AI
+        if 'state' in context.user_data and context.user_data['state'] in [WAIT_QUESTION, AI_CONVERSATION]:
+            logger.info(f"Передаю сообщение в режим диалога с AI: {text[:50]}...")
+            
+            if context.user_data['state'] == WAIT_QUESTION:
+                context.user_data['state'] = AI_CONVERSATION
+                return await self.process_ai_question(update, context)
+            else:  # AI_CONVERSATION
+                return await self.continue_ai_conversation(update, context)
+        
+        # Если пользователь в режиме ожидания ввода заказа
+        elif 'state' in context.user_data and context.user_data['state'] == WAIT_ORDER_TEXT:
+            return await self.process_order_text(update, context)
         
         # Обработка текстовых кнопок меню
-        if text == "📋 Просмотр очереди":
+        elif text == "📋 Просмотр очереди":
             await self.cmd_queue(update, context)
         elif text == "➕ Новый заказ":
             await self.cmd_new_order(update, context)
@@ -752,6 +768,10 @@ class TelegramBot:
             reply_markup=reply_markup
         )
         
+        # Устанавливаем состояние пользователя в режим ожидания вопроса
+        context.user_data['state'] = WAIT_QUESTION
+        logger.info(f"Пользователь {user.username or user.first_name} (ID: {user.id}) вошел в режим диалога с AI")
+        
         return WAIT_QUESTION
         
     async def process_ai_question(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -824,6 +844,9 @@ class TelegramBot:
             # Логируем успешный ответ
             logger.info(f"AI успешно ответил на вопрос пользователя {user.username or user.first_name} (ID: {user.id})")
             
+            # Устанавливаем состояние пользователя в режим AI диалога
+            context.user_data['state'] = AI_CONVERSATION
+            
             # Возвращаемся в режим диалога
             return AI_CONVERSATION
             
@@ -847,6 +870,11 @@ class TelegramBot:
             
     async def continue_ai_conversation(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Продолжает диалог с Claude AI после первого вопроса"""
+        # Проверяем состояние пользователя
+        if 'state' not in context.user_data or context.user_data['state'] != AI_CONVERSATION:
+            context.user_data['state'] = AI_CONVERSATION
+            logger.info(f"Устанавливаю состояние AI_CONVERSATION для пользователя {update.effective_user.id}")
+            
         # Просто повторяем процесс обработки вопроса
         return await self.process_ai_question(update, context)
         
@@ -855,10 +883,15 @@ class TelegramBot:
         user = update.effective_user
         chat_id = update.effective_chat.id
         
+        # Сбрасываем состояние пользователя
+        if 'state' in context.user_data:
+            del context.user_data['state']
+            logger.info(f"Сброс состояния для пользователя {user.id} при выходе из диалога с AI")
+        
         # Создаем клавиатуру основных действий
         keyboard = [
             [KeyboardButton("📋 Просмотр очереди"), KeyboardButton("➕ Новый заказ")],
-            [KeyboardButton("❓ Помощь")]
+            [KeyboardButton("🤖 Спросить AI"), KeyboardButton("❓ Помощь")]
         ]
         reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
         
@@ -874,6 +907,12 @@ class TelegramBot:
         """Завершает диалог с Claude AI по нажатию на кнопку"""
         query = update.callback_query
         user = query.from_user
+        chat_id = query.message.chat_id
+        
+        # Сбрасываем состояние пользователя
+        if 'state' in context.user_data:
+            del context.user_data['state']
+            logger.info(f"Сброс состояния для пользователя {user.id} при нажатии на кнопку выхода из AI")
         
         # Обязательно отправляем ответ, чтобы убрать часы загрузки
         await query.answer()
@@ -929,6 +968,7 @@ class TelegramBot:
         
         # Устанавливаем состояние ожидания вопроса
         context.user_data['state'] = WAIT_QUESTION
+        logger.info(f"Пользователь {user.username or user.first_name} (ID: {user.id}) вошел в режим диалога с AI через кнопку")
         
         # Добавляем обработчик следующего сообщения как вопроса к AI
         return WAIT_QUESTION
