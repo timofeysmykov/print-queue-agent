@@ -17,7 +17,7 @@ from typing import Dict, List, Any, Optional, Union
 from dotenv import load_dotenv
 
 # Импорт других модулей проекта
-from onedrive_integration import OneDriveIntegration
+from gdrive_integration import GoogleDriveIntegration
 from data_processing import OrderProcessor
 from queue_formation import QueueManager
 from excel_editing import ExcelHandler
@@ -56,9 +56,9 @@ class PrintQueueAgent:
         
         # Получение путей к файлам
         self.files_config = self.config.get('files', {})
-        self.onedrive_orders_path = self.files_config.get('onedrive_orders_path', '/Print/orders.xlsx')
-        self.onedrive_queue_path = self.files_config.get('onedrive_queue_path', '/Print/queue.xlsx')
-        self.onedrive_techlists_folder = self.files_config.get('onedrive_techlists_folder', '/Print/Techlists/')
+        self.gdrive_orders_path = self.files_config.get('gdrive_orders_path', '/Print/orders.xlsx')
+        self.gdrive_queue_path = self.files_config.get('gdrive_queue_path', '/Print/queue.xlsx')
+        self.gdrive_techlists_folder = self.files_config.get('gdrive_techlists_folder', '/Print/Techlists/')
         self.local_data_folder = Path(self.files_config.get('local_data_folder', 'data/'))
         
         # Создание директории для данных
@@ -69,7 +69,7 @@ class PrintQueueAgent:
         self.check_interval_minutes = self.telegram_config.get('check_interval_minutes', 30)
         
         # Инициализация компонентов системы
-        self.onedrive = OneDriveIntegration(config_path)
+        self.gdrive = GoogleDriveIntegration(config_path)
         self.order_processor = OrderProcessor(config_path)
         self.queue_manager = QueueManager(config_path)
         self.excel_handler = ExcelHandler(config_path)
@@ -94,35 +94,35 @@ class PrintQueueAgent:
         
         logger.info("Инициализация агента очереди печати завершена")
     
-    def download_files_from_onedrive(self) -> Dict[str, str]:
+    def download_files_from_gdrive(self) -> Dict[str, str]:
         """
-        Скачивание необходимых файлов из OneDrive.
+        Скачивание необходимых файлов из Google Drive.
         
         Returns:
             Dict[str, str]: Словарь с путями к скачанным файлам.
         """
-        logger.info("Скачивание файлов из OneDrive")
+        logger.info("Скачивание файлов из Google Drive")
         
         try:
             # Скачивание файла с заказами
-            orders_local_path = self.onedrive.download_file(
-                self.onedrive_orders_path, 
-                Path(self.onedrive_orders_path).name
+            orders_local_path = self.gdrive.download_file(
+                self.gdrive_orders_path, 
+                Path(self.gdrive_orders_path).name
             )
             logger.info(f"Файл заказов скачан: {orders_local_path}")
             
             # Проверка существования файла очереди
             try:
                 # Попытка скачать существующий файл очереди
-                queue_local_path = self.onedrive.download_file(
-                    self.onedrive_queue_path, 
-                    Path(self.onedrive_queue_path).name
+                queue_local_path = self.gdrive.download_file(
+                    self.gdrive_queue_path, 
+                    Path(self.gdrive_queue_path).name
                 )
                 logger.info(f"Файл очереди скачан: {queue_local_path}")
             except Exception as e:
                 logger.warning(f"Файл очереди не найден: {str(e)}")
                 # Создание нового файла очереди
-                queue_file_name = Path(self.onedrive_queue_path).name
+                queue_file_name = Path(self.gdrive_queue_path).name
                 queue_local_path = self.excel_handler.create_empty_queue_file(
                     self.local_data_folder / queue_file_name
                 )
@@ -136,31 +136,31 @@ class PrintQueueAgent:
             logger.error(f"Ошибка при скачивании файлов: {str(e)}")
             raise
     
-    def upload_files_to_onedrive(self, files: Dict[str, str]) -> None:
+    def upload_files_to_gdrive(self, files: Dict[str, str]) -> None:
         """
-        Загрузка обновленных файлов в OneDrive.
+        Загрузка обновленных файлов в Google Drive.
         
         Args:
             files (Dict[str, str]): Словарь с путями к файлам для загрузки.
         """
-        logger.info("Загрузка файлов в OneDrive")
+        logger.info("Загрузка файлов в Google Drive")
         
         try:
             # Загрузка файла очереди
             if "queue" in files:
-                self.onedrive.upload_file(
+                self.gdrive.upload_file(
                     files["queue"],
-                    self.onedrive_queue_path
+                    self.gdrive_queue_path
                 )
-                logger.info(f"Файл очереди загружен: {self.onedrive_queue_path}")
+                logger.info(f"Файл очереди загружен: {self.gdrive_queue_path}")
             
             # Загрузка других файлов при необходимости
-            if "orders" in files and files["orders"] != self.local_data_folder / Path(self.onedrive_orders_path).name:
-                self.onedrive.upload_file(
+            if "orders" in files and files["orders"] != self.local_data_folder / Path(self.gdrive_orders_path).name:
+                self.gdrive.upload_file(
                     files["orders"],
-                    self.onedrive_orders_path
+                    self.gdrive_orders_path
                 )
-                logger.info(f"Файл заказов загружен: {self.onedrive_orders_path}")
+                logger.info(f"Файл заказов загружен: {self.gdrive_orders_path}")
         except Exception as e:
             logger.error(f"Ошибка при загрузке файлов: {str(e)}")
             raise
@@ -331,8 +331,8 @@ class PrintQueueAgent:
         logger.info("Запуск полного цикла обработки очереди печати")
         
         try:
-            # Скачивание файлов из OneDrive
-            files = self.download_files_from_onedrive()
+            # Скачивание файлов из Google Drive
+            files = self.download_files_from_gdrive()
             
             # Обработка заказов
             processed_orders = self.process_orders(files["orders"])
@@ -340,8 +340,8 @@ class PrintQueueAgent:
             # Обновление очереди
             queue_data = self.update_queue(processed_orders, files["queue"])
             
-            # Загрузка обновленных файлов в OneDrive
-            self.upload_files_to_onedrive({"queue": queue_data["queue_file"]})
+            # Загрузка обновленных файлов в Google Drive
+            self.upload_files_to_gdrive({"queue": queue_data["queue_file"]})
             
             # Отправка уведомлений
             self.send_notifications(queue_data)
@@ -400,9 +400,9 @@ class PrintQueueAgent:
         parser.add_argument('--background', action='store_true', 
                           help='Запустить фоновую обработку очереди')
         parser.add_argument('--download-files', action='store_true', 
-                          help='Скачать файлы из OneDrive')
+                          help='Скачать файлы из Google Drive')
         parser.add_argument('--upload-files', action='store_true', 
-                          help='Загрузить файлы в OneDrive')
+                          help='Загрузить файлы в Google Drive')
         parser.add_argument('--report', action='store_true', 
                           help='Сформировать отчет об очереди')
         
@@ -424,21 +424,21 @@ class PrintQueueAgent:
                 self.stop_background_thread()
         elif args.download_files:
             # Скачивание файлов
-            files = self.download_files_from_onedrive()
+            files = self.download_files_from_gdrive()
             print(f"Файлы скачаны: {files}")
         elif args.upload_files:
             # Загрузка файлов
             # Определение файлов для загрузки
-            queue_file = self.local_data_folder / Path(self.onedrive_queue_path).name
+            queue_file = self.local_data_folder / Path(self.gdrive_queue_path).name
             if queue_file.exists():
-                self.upload_files_to_onedrive({"queue": str(queue_file)})
-                print(f"Файл очереди загружен: {self.onedrive_queue_path}")
+                self.upload_files_to_gdrive({"queue": str(queue_file)})
+                print(f"Файл очереди загружен: {self.gdrive_queue_path}")
             else:
                 print(f"Файл очереди не найден: {queue_file}")
         elif args.report:
             # Формирование отчета
             # Сначала скачиваем файл очереди
-            files = self.download_files_from_onedrive()
+            files = self.download_files_from_gdrive()
             
             # Чтение очереди
             queue_df = self.excel_handler.read_excel(files["queue"])

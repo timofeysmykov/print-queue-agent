@@ -13,7 +13,7 @@ from unittest.mock import patch, MagicMock
 from pathlib import Path
 
 # Импортируем модули проекта
-from onedrive_integration import OneDriveIntegration
+from gdrive_integration import GoogleDriveIntegration
 from data_processing import OrderProcessor, LLMProcessor
 from queue_formation import QueueManager
 from excel_editing import ExcelHandler
@@ -39,9 +39,9 @@ TEST_CONFIG = {
         "default_priority": "обычный"
     },
     "files": {
-        "onedrive_orders_path": "/Print/orders.xlsx",
-        "onedrive_queue_path": "/Print/queue.xlsx",
-        "onedrive_techlists_folder": "/Print/Techlists/",
+        "gdrive_orders_path": "/Print/orders.xlsx",
+        "gdrive_queue_path": "/Print/queue.xlsx",
+        "gdrive_techlists_folder": "/Print/Techlists/",
         "local_data_folder": "data/"
     },
     "notifications": {
@@ -78,27 +78,27 @@ SAMPLE_ORDERS = [
 ]
 
 
-class TestOneDriveIntegration(unittest.TestCase):
-    """Тесты для модуля интеграции с OneDrive."""
+class TestGoogleDriveIntegration(unittest.TestCase):
+    """Тесты для модуля интеграции с Google Drive."""
     
-    @patch('onedrive_integration.msal.ConfidentialClientApplication')
-    @patch('onedrive_integration.requests.post')
-    @patch('onedrive_integration.requests.get')
-    def setUp(self, mock_get, mock_post, mock_msal):
+    @patch('gdrive_integration.service_account.Credentials.from_service_account_info')
+    @patch('gdrive_integration.build')
+    def setUp(self, mock_build, mock_credentials):
         """Настройка перед запуском тестов."""
         # Настройка моков
-        mock_msal.return_value.acquire_token_silent.return_value = None
-        mock_msal.return_value.acquire_token_for_client.return_value = {"access_token": "test_token"}
+        mock_credentials.return_value = MagicMock()
         
-        # Мок для успешного ответа от API
-        mock_get.return_value.status_code = 200
-        mock_get.return_value.json.return_value = {"value": []}
-        
-        mock_post.return_value.status_code = 200
+        # Мок для драйв сервиса
+        mock_drive_service = MagicMock()
+        mock_files = MagicMock()
+        mock_drive_service.files.return_value = mock_files
+        mock_build.return_value = mock_drive_service
         
         # Создание тестового экземпляра
-        with patch('builtins.open'), patch('yaml.safe_load', return_value=TEST_CONFIG):
-            self.onedrive = OneDriveIntegration()
+        with patch('builtins.open'), patch('yaml.safe_load', return_value=TEST_CONFIG), \
+             patch('json.loads', return_value={'key': 'test_value'}), \
+             patch('os.getenv', return_value='{"key": "test_value"}'):
+            self.gdrive = GoogleDriveIntegration()
             self.onedrive.token = "test_token"
     
     def test_auth(self):
@@ -415,7 +415,7 @@ class TestPrintQueueAgent(unittest.TestCase):
         """Настройка перед запуском тестов."""
         # Патчи для всех зависимых классов
         patches = [
-            patch('main.OneDriveIntegration'),
+            patch('main.GoogleDriveIntegration'),
             patch('main.OrderProcessor'),
             patch('main.QueueManager'),
             patch('main.ExcelHandler'),
@@ -434,7 +434,7 @@ class TestPrintQueueAgent(unittest.TestCase):
         self.agent = PrintQueueAgent()
         
         # Настройка моков для компонентов
-        self.agent.onedrive = MagicMock()
+        self.agent.gdrive = MagicMock()
         self.agent.order_processor = MagicMock()
         self.agent.queue_manager = MagicMock()
         self.agent.excel_handler = MagicMock()
