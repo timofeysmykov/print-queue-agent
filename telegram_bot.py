@@ -173,7 +173,7 @@ class TelegramBot:
         # Обработчик любых других сообщений
         self.application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.echo))
         
-    def clean_bot_state(self):
+    async def clean_bot_state(self):
         """Очищает состояние бота перед запуском, удаляя все webhook'и и pending updates.
         Это предотвращает конфликты между несколькими экземплярами бота.
         """
@@ -183,7 +183,8 @@ class TelegramBot:
             
             # Удаляем webhook если он есть
             logger.info("Удаление webhook и очистка обновлений...")
-            bot.delete_webhook(drop_pending_updates=True)
+            # Используем await для асинхронного метода
+            await bot.delete_webhook(drop_pending_updates=True)
             
             # Дополнительная проверка завершения всех активных сессий
             logger.info("Успешная очистка состояния бота")
@@ -192,11 +193,24 @@ class TelegramBot:
             logger.error(f"Ошибка при очистке состояния бота: {str(e)}")
             return False
     
+    async def pre_run_setup(self, application):
+        """Подготовка бота перед запуском"""
+        logger.info("Подготовка бота перед запуском...")
+        await self.clean_bot_state()
+        logger.info("Подготовка завершена")
+        
     def start(self):
         """Запускает бота"""
+        import asyncio
+        
         try:
-            # Очищаем состояние бота перед запуском
-            self.clean_bot_state()
+            # Создаем и запускаем цикл для предварительной очистки
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            # Выполняем очистку состояния синхронно
+            loop.run_until_complete(asyncio.gather(
+                self.application.bot.delete_webhook(drop_pending_updates=True)
+            ))
             
             # Запускаем бота в режиме получения обновлений
             logger.info("Запуск Telegram-бота...")
