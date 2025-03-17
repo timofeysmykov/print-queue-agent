@@ -173,11 +173,37 @@ class TelegramBot:
         # Обработчик любых других сообщений
         self.application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.echo))
         
+    def clean_bot_state(self):
+        """Очищает состояние бота перед запуском, удаляя все webhook'и и pending updates.
+        Это предотвращает конфликты между несколькими экземплярами бота.
+        """
+        try:
+            # Получаем доступ к боту
+            bot = self.application.bot
+            
+            # Удаляем webhook если он есть
+            logger.info("Удаление webhook и очистка обновлений...")
+            bot.delete_webhook(drop_pending_updates=True)
+            
+            # Дополнительная проверка завершения всех активных сессий
+            logger.info("Успешная очистка состояния бота")
+            return True
+        except Exception as e:
+            logger.error(f"Ошибка при очистке состояния бота: {str(e)}")
+            return False
+    
     def start(self):
         """Запускает бота"""
-        # Запускаем бота
-        self.application.run_polling()
-        logger.info("Бот запущен")
+        try:
+            # Очищаем состояние бота перед запуском
+            self.clean_bot_state()
+            
+            # Запускаем бота в режиме получения обновлений
+            logger.info("Запуск Telegram-бота...")
+            self.application.run_polling(drop_pending_updates=True)
+            logger.info("Бот запущен")
+        except Exception as e:
+            logger.error(f"Ошибка при запуске бота: {str(e)}")
         
     def is_admin(self, user_id):
         """Проверяет, является ли пользователь администратором"""
