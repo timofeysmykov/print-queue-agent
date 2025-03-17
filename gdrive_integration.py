@@ -36,6 +36,11 @@ class GoogleDriveIntegration:
         Args:
             config_path (str): Путь к файлу конфигурации.
         """
+        # Настройка кодировки для избежания проблем
+        import sys
+        if hasattr(sys, 'setdefaultencoding'):
+            sys.setdefaultencoding('utf-8')
+            
         # Загрузка переменных окружения
         load_dotenv()
         
@@ -112,15 +117,20 @@ class GoogleDriveIntegration:
             dict: Информация о найденном файле или None, если файл не найден.
         """
         try:
-            query = f"name = '{file_name}' and '{folder_id}' in parents and trashed = false"
+            # Используем список файлов и фильтруем по имени вместо прямого запроса с именем файла
+            query = f"'{folder_id}' in parents and trashed = false"
             results = self.drive_service.files().list(
                 q=query,
                 fields="files(id, name, mimeType)",
-                pageSize=1
+                pageSize=100
             ).execute()
             
             files = results.get('files', [])
-            return files[0] if files else None
+            
+            # Фильтруем на стороне Python, чтобы избежать проблем с кодировкой
+            matching_files = [f for f in files if f.get('name') == file_name]
+            return matching_files[0] if matching_files else None
+            
         except Exception as e:
             logger.error(f"Ошибка при поиске файла {file_name}: {str(e)}")
             raise
@@ -135,31 +145,41 @@ class GoogleDriveIntegration:
         Returns:
             dict: Информация о найденном файле или None, если файл не найден.
         """
-        # Разделение пути на компоненты
-        components = [comp for comp in path.strip('/').split('/') if comp]
-        
-        if not components:
-            logger.error("Пустой путь к файлу")
-            return None
-        
-        parent_id = "root"
-        
-        # Навигация по директориям
-        for i, component in enumerate(components):
-            is_last = (i == len(components) - 1)
+        try:
+            # Разделение пути на компоненты
+            components = [comp for comp in path.strip('/').split('/') if comp]
             
-            if is_last:
-                # Ищем файл в текущей директории
-                return self.find_file_by_name(component, parent_id)
-            else:
-                # Ищем папку
-                folder = self.find_file_by_name(component, parent_id)
-                if not folder:
-                    logger.error(f"Папка {component} не найдена")
-                    return None
-                parent_id = folder['id']
-        
-        return None
+            if not components:
+                logger.error("Пустой путь к файлу")
+                return None
+            
+            parent_id = "root"
+            
+            # Навигация по директориям
+            for i, component in enumerate(components):
+                is_last = (i == len(components) - 1)
+                
+                # Логируем для отладки
+                logger.debug(f"Поиск компонента '{component}' в папке '{parent_id}'")
+                
+                if is_last:
+                    # Ищем файл в текущей директории
+                    return self.find_file_by_name(component, parent_id)
+                else:
+                    # Ищем папку
+                    folder = self.find_file_by_name(component, parent_id)
+                    if not folder:
+                        logger.error(f"Папка {component} не найдена")
+                        return None
+                    parent_id = folder['id']
+            
+            # Если мы дошли до сюда, значит что-то пошло не так
+            return None
+            
+        except Exception as e:
+            # Логируем ошибку и добавляем информацию о кодировке
+            logger.error(f"Ошибка при поиске файла по пути {path}: {str(e)}")
+            return None
     
     def download_file(self, file_path, local_filename=None):
         """
@@ -198,7 +218,7 @@ class GoogleDriveIntegration:
                 status, done = downloader.next_chunk()
                 logger.debug(f"Скачивание {file_path}: {int(status.progress() * 100)}%")
             
-            # Сохранение файла
+            # Сохранение файла в бинарном режиме для предотвращения проблем с кодировкой
             with open(local_path, 'wb') as f:
                 f.write(fh.getvalue())
             
