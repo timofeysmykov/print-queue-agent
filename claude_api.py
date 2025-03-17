@@ -52,7 +52,7 @@ class ClaudeAPIClient:
         }
         
         # Параметры по умолчанию
-        self.default_model = "claude-3-haiku-20240307"
+        self.default_model = "claude-3-5-sonnet-20240620"
         self.default_max_tokens = 1000
         self.default_temperature = 0.1
         
@@ -113,7 +113,15 @@ class ClaudeAPIClient:
             
             # Извлечение текста из ответа
             if "content" in response_data and len(response_data["content"]) > 0:
-                result = response_data["content"][0]["text"]
+                # Проверяем формат ответа
+                if isinstance(response_data["content"], list) and "text" in response_data["content"][0]:
+                    result = response_data["content"][0]["text"]
+                elif isinstance(response_data["content"], list) and "type" in response_data["content"][0] and response_data["content"][0]["type"] == "text":
+                    result = response_data["content"][0]["text"]
+                else:
+                    logger.warning("Неизвестный формат ответа от Claude API")
+                    logger.debug(f"Содержимое content: {response_data['content']}")
+                    return str(response_data)
             else:
                 logger.warning("Неожиданный формат ответа от Claude API")
                 logger.debug(f"Полученный ответ: {response_data}")
@@ -213,7 +221,7 @@ class ClaudeAPIClient:
             # Отправка запроса к Claude API
             response = self.process_prompt(
                 prompt=prompt,
-                model="claude-3-haiku-20240307",
+                model="claude-3-5-sonnet-20240620",
                 max_tokens=1000,
                 temperature=0.1
             )
