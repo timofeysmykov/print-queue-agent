@@ -355,6 +355,99 @@ class QueueManager:
         
         logger.info(f"Выявлено {len(problematic_orders)} проблемных заказов в очереди")
         return problematic_orders
+    
+    def add_order(self, order_data: Dict[str, Any]) -> str:
+        """
+        Добавляет новый заказ в очередь печати.
+        
+        Args:
+            order_data (Dict[str, Any]): Данные заказа.
+            
+        Returns:
+            str: Идентификатор созданного заказа.
+        """
+        # Генерация уникального идентификатора заказа, если не задан
+        if 'order_id' not in order_data or not order_data['order_id']:
+            timestamp = datetime.datetime.now().strftime("%Y%m%d%H%M%S")
+            order_data['order_id'] = f"ORD-{timestamp}"
+        
+        # Добавление времени создания, если не задано
+        if 'created_at' not in order_data:
+            order_data['created_at'] = datetime.datetime.now().strftime("%d.%m.%Y %H:%M:%S")
+        
+        # Установка статуса, если не задан
+        if 'status' not in order_data:
+            order_data['status'] = "Новый"
+        
+        # Пробуем получить текущую очередь
+        try:
+            current_queue = self.get_current_queue()
+        except Exception as e:
+            logger.error(f"Ошибка при получении текущей очереди: {str(e)}")
+            current_queue = []
+        
+        # Добавление заказа в очередь
+        current_queue.append(order_data)
+        
+        # Пересортировка очереди
+        sorted_queue = self.sort_orders(current_queue)
+        
+        # Обновление порядковых номеров
+        for i, order in enumerate(sorted_queue):
+            order['queue_position'] = i + 1
+        
+        # Сохранение обновленной очереди (если требуется)
+        try:
+            self.save_queue(sorted_queue)
+        except Exception as e:
+            logger.error(f"Ошибка при сохранении очереди: {str(e)}")
+        
+        logger.info(f"Добавлен новый заказ #{order_data['order_id']} в очередь")
+        return order_data['order_id']
+    
+    def get_current_queue(self) -> List[Dict[str, Any]]:
+        """
+        Получение текущей очереди печати.
+        
+        Returns:
+            List[Dict[str, Any]]: Список заказов в очереди.
+        """
+        # Здесь должна быть логика загрузки очереди из файла или базы данных
+        # Пока вернем пустой список для простоты
+        return []
+    
+    def save_queue(self, queue: List[Dict[str, Any]]) -> bool:
+        """
+        Сохранение очереди печати.
+        
+        Args:
+            queue (List[Dict[str, Any]]): Очередь заказов для сохранения.
+            
+        Returns:
+            bool: True в случае успеха, False в случае ошибки.
+        """
+        # Здесь должна быть логика сохранения очереди в файл или базу данных
+        # Пока просто логируем действие
+        logger.info(f"Сохранение очереди с {len(queue)} заказами")
+        return True
+    
+    def get_order_by_id(self, order_id: str) -> Optional[Dict[str, Any]]:
+        """
+        Получение заказа по его идентификатору.
+        
+        Args:
+            order_id (str): Идентификатор заказа.
+            
+        Returns:
+            Optional[Dict[str, Any]]: Данные заказа или None, если заказ не найден.
+        """
+        current_queue = self.get_current_queue()
+        
+        for order in current_queue:
+            if order.get('order_id') == order_id:
+                return order
+        
+        return None
 
 
 if __name__ == "__main__":

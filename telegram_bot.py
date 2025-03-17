@@ -8,9 +8,9 @@ Telegram-бот для взаимодействия с агентом очере
 
 import logging
 import os
-from telegram import Update
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, ReplyKeyboardRemove, KeyboardButton
 from telegram.constants import ParseMode
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, ConversationHandler
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, ConversationHandler, CallbackQueryHandler
 
 # Настройка логирования
 logging.basicConfig(
@@ -20,6 +20,12 @@ logger = logging.getLogger(__name__)
 
 # Состояния разговора с ботом
 WAIT_ORDER_TEXT, WAIT_CONFIRM = range(2)
+
+# Команды для обработки действий с кнопок
+COMMAND_NEW_ORDER = 'new_order'
+COMMAND_QUEUE = 'view_queue'
+COMMAND_STATUS = 'check_status'
+COMMAND_HELP = 'help'
 
 class TelegramNotifier:
     """Класс для отправки уведомлений через Telegram"""
@@ -141,17 +147,25 @@ class TelegramBot:
         
         # Обработчик разговора для создания нового заказа
         conv_handler = ConversationHandler(
-            entry_points=[CommandHandler("new_order", self.cmd_new_order)],
+            entry_points=[
+                CommandHandler("new_order", self.cmd_new_order),
+                CallbackQueryHandler(self.button_callback, pattern=f"^{COMMAND_NEW_ORDER}$")
+            ],
             states={
                 WAIT_ORDER_TEXT: [MessageHandler(filters.TEXT & ~filters.COMMAND, self.process_order_text)],
                 WAIT_CONFIRM: [
                     MessageHandler(filters.Regex('^(Да|да)$'), self.confirm_order),
                     MessageHandler(filters.Regex('^(Нет|нет)$'), self.cancel_order),
+                    CallbackQueryHandler(self.confirm_order_callback, pattern='^confirm$'),
+                    CallbackQueryHandler(self.cancel_order_callback, pattern='^cancel$'),
                 ]
             },
             fallbacks=[CommandHandler("cancel", self.cancel_order)]
         )
         self.application.add_handler(conv_handler)
+        
+        # Обработчик для кнопок
+        self.application.add_handler(CallbackQueryHandler(self.button_callback))
         
         # Обработчик неизвестных команд
         self.application.add_handler(MessageHandler(filters.COMMAND, self.unknown_command))
@@ -174,9 +188,18 @@ class TelegramBot:
     async def cmd_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Обрабатывает команду /start"""
         user = update.effective_user
+        
+        # Создаем клавиатуру основных действий
+        keyboard = [
+            [KeyboardButton("📋 Просмотр очереди"), KeyboardButton("➕ Новый заказ")],
+            [KeyboardButton("❓ Помощь")]
+        ]
+        reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+        
         await update.message.reply_text(
             f'Привет, {user.first_name}! Я бот для управления очередью печати. '
-            'Используйте /help для получения списка доступных команд.'
+            'Выберите действие в меню ниже или используйте /help для получения списка доступных команд.',
+            reply_markup=reply_markup
         )
     
     async def cmd_help(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -184,14 +207,27 @@ class TelegramBot:
         help_text = """
         <b>Доступные команды:</b>
         
-        /queue - Показать текущую очередь печати
+        📋 Просмотр очереди - Показать текущую очередь печати
+        ➕ Новый заказ - Создать новый заказ
         /status ID - Проверить статус заказа по ID
-        /new_order - Создать новый заказ
-        /help - Показать это сообщение
         
-        Для создания нового заказа введите /new_order и следуйте инструкциям.
+        Для создания нового заказа нажмите кнопку "➕ Новый заказ" и следуйте инструкциям.
+        Для проверки статуса введите команду /status с номером заказа.
         """
-        await update.message.reply_text(help_text, parse_mode=ParseMode.HTML)
+        
+        # Создаем inline-кнопки действий
+        keyboard = [
+            [InlineKeyboardButton("📋 Просмотр очереди", callback_data=COMMAND_QUEUE)],
+            [InlineKeyboardButton("➕ Новый заказ", callback_data=COMMAND_NEW_ORDER)]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        # Отправляем сообщение с кнопками
+        await update.message.reply_text(
+            help_text, 
+            parse_mode=ParseMode.HTML,
+            reply_markup=reply_markup
+        )
     
     async def cmd_queue(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Обрабатывает команду /queue - показывает текущую очередь печати"""
@@ -205,21 +241,43 @@ class TelegramBot:
             queue = self.queue_manager.get_current_queue()
             
             if not queue:
-                await update.message.reply_text("Очередь пуста.")
+                # Создаем кнопки действий
+                keyboard = [
+                    [InlineKeyboardButton("➕ Новый заказ", callback_data=COMMAND_NEW_ORDER)],
+                    [InlineKeyboardButton("🔄 Обновить", callback_data=COMMAND_QUEUE)]
+                ]
+                reply_markup = InlineKeyboardMarkup(keyboard)
+                
+                await update.message.reply_text(
+                    "Очередь пуста. Нажмите кнопку 'Новый заказ', чтобы добавить заказ.", 
+                    reply_markup=reply_markup
+                )
                 return
                 
             # Формируем сообщение с информацией о заказах
             message = "<b>Текущая очередь печати:</b>\n\n"
             
             for i, order in enumerate(queue, 1):
-                message += f"{i}. <b>Заказ #{order.get('id', 'N/A')}</b>\n"
+                order_id = order.get('order_id', order.get('id', 'N/A'))
+                message += f"{i}. <b>Заказ #{order_id}</b>\n"
                 message += f"   Клиент: {order.get('customer', 'Не указан')}\n"
                 message += f"   Статус: {order.get('status', 'Не указан')}\n"
                 if 'deadline' in order:
                     message += f"   Срок: {order['deadline']}\n"
                 message += "\n"
-                
-            await update.message.reply_text(message, parse_mode=ParseMode.HTML)
+            
+            # Создаем кнопки действий для очереди
+            keyboard = [
+                [InlineKeyboardButton("➕ Новый заказ", callback_data=COMMAND_NEW_ORDER)],
+                [InlineKeyboardButton("🔄 Обновить", callback_data=COMMAND_QUEUE)]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            
+            await update.message.reply_text(
+                message, 
+                parse_mode=ParseMode.HTML,
+                reply_markup=reply_markup
+            )
         except Exception as e:
             logger.error(f"Ошибка при получении очереди: {str(e)}")
             await update.message.reply_text(f"Произошла ошибка: {str(e)}")
@@ -300,10 +358,19 @@ class TelegramBot:
                     
                 if 'deadline' in order_data:
                     message += f"<b>Срок выполнения:</b> {order_data['deadline']}\n"
-                    
-                message += "\n<b>Всё верно? (Да/Нет)</b>"
                 
-                await update.message.reply_text(message, parse_mode=ParseMode.HTML)
+                # Создаем кнопки для подтверждения
+                keyboard = [
+                    [InlineKeyboardButton("✅ Да, всё верно", callback_data="confirm")],
+                    [InlineKeyboardButton("❌ Нет, отменить", callback_data="cancel")]
+                ]
+                reply_markup = InlineKeyboardMarkup(keyboard)
+                
+                await update.message.reply_text(
+                    message + "\n<b>Всё верно? Нажмите на соответствующую кнопку:</b>", 
+                    parse_mode=ParseMode.HTML,
+                    reply_markup=reply_markup
+                )
                 return WAIT_CONFIRM
             else:
                 await update.message.reply_text(
@@ -320,7 +387,7 @@ class TelegramBot:
             return ConversationHandler.END
     
     async def confirm_order(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Подтверждает создание заказа"""
+        """Подтверждает создание заказа (для текстового ввода)"""
         order_data = context.user_data.get('order_data')
         
         if not order_data:
@@ -332,9 +399,16 @@ class TelegramBot:
                 # Добавляем заказ в очередь
                 order_id = self.queue_manager.add_order(order_data)
                 
+                # Создаем кнопку для просмотра очереди
+                keyboard = [
+                    [InlineKeyboardButton("📋 Просмотреть очередь", callback_data=COMMAND_QUEUE)]
+                ]
+                reply_markup = InlineKeyboardMarkup(keyboard)
+                
                 await update.message.reply_text(
                     f"Заказ успешно создан с ID: {order_id}\n"
-                    f"Вы можете проверить его статус командой /status {order_id}"
+                    f"Вы можете проверить его статус командой /status {order_id}",
+                    reply_markup=reply_markup
                 )
             else:
                 await update.message.reply_text(
@@ -349,13 +423,71 @@ class TelegramBot:
         context.user_data.clear()
         return ConversationHandler.END
     
+    async def confirm_order_callback(self, query, context):
+        """Подтверждает создание заказа (для кнопок)"""
+        order_data = context.user_data.get('order_data')
+        
+        if not order_data:
+            await query.edit_message_text("Информация о заказе отсутствует. Пожалуйста, начните заново.")
+            return ConversationHandler.END
+            
+        try:
+            if self.queue_manager:
+                # Добавляем заказ в очередь
+                order_id = self.queue_manager.add_order(order_data)
+                
+                # Создаем кнопки для дальнейших действий
+                keyboard = [
+                    [InlineKeyboardButton("📋 Просмотреть очередь", callback_data=COMMAND_QUEUE)],
+                    [InlineKeyboardButton("➕ Добавить ещё заказ", callback_data=COMMAND_NEW_ORDER)]
+                ]
+                reply_markup = InlineKeyboardMarkup(keyboard)
+                
+                await query.edit_message_text(
+                    f"Заказ успешно создан с ID: {order_id}\n"
+                    f"Вы можете проверить его статус командой /status {order_id}\n"
+                    f"Выберите дальнейшее действие:",
+                    reply_markup=reply_markup,
+                    parse_mode=ParseMode.HTML
+                )
+            else:
+                await query.edit_message_text(
+                    "Не удалось добавить заказ: менеджер очереди не инициализирован. "
+                    "Заказ сохранен в системе, но не добавлен в очередь."
+                )
+        except Exception as e:
+            logger.error(f"Ошибка при добавлении заказа: {str(e)}")
+            await query.edit_message_text(f"Произошла ошибка при добавлении заказа: {str(e)}")
+            
+        # Очищаем данные пользователя
+        context.user_data.clear()
+        return ConversationHandler.END
+    
     async def cancel_order(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Отменяет создание заказа"""
+        """Отменяет создание заказа (для текстового ввода)"""
         await update.message.reply_text(
-            "Создание заказа отменено. Вы можете начать заново с команды /new_order"
+            "Создание заказа отменено. Вы можете начать заново с команды /new_order или кнопки 'Новый заказ'"
         )
         # Очищаем данные пользователя
         context.user_data.clear()
+        return ConversationHandler.END
+        
+    async def cancel_order_callback(self, query, context):
+        """Отменяет создание заказа (для кнопок)"""
+        # Очищаем данные пользователя
+        context.user_data.clear()
+        
+        # Создаем кнопки для дальнейших действий
+        keyboard = [
+            [InlineKeyboardButton("📋 Просмотр очереди", callback_data=COMMAND_QUEUE)],
+            [InlineKeyboardButton("➕ Новый заказ", callback_data=COMMAND_NEW_ORDER)]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await query.edit_message_text(
+            "Создание заказа отменено. Выберите дальнейшее действие:",
+            reply_markup=reply_markup
+        )
         return ConversationHandler.END
     
     async def unknown_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -365,10 +497,123 @@ class TelegramBot:
         )
     
     async def echo(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Отвечает на обычные сообщения"""
-        await update.message.reply_text(
-            "Я понимаю только команды. Используйте /help для получения списка доступных команд."
+        """Отвечает на обычные сообщения и обрабатывает текстовые кнопки"""
+        text = update.message.text
+        
+        # Обработка текстовых кнопок меню
+        if text == "📋 Просмотр очереди":
+            await self.cmd_queue(update, context)
+        elif text == "➕ Новый заказ":
+            await self.cmd_new_order(update, context)
+        elif text == "❓ Помощь":
+            await self.cmd_help(update, context)
+        else:
+            await update.message.reply_text(
+                "Я понимаю только команды и кнопки меню. Используйте кнопки внизу экрана или /help для получения списка доступных команд."
+            )
+            
+    async def button_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Обрабатывает нажатия на inline-кнопки"""
+        query = update.callback_query
+        # Обязательно отправляем ответ, чтобы убрать часы загрузки
+        await query.answer()
+        
+        # Обрабатываем разные типы кнопок
+        if query.data == COMMAND_QUEUE:
+            await self.cmd_queue_callback(query, context)
+        elif query.data == COMMAND_NEW_ORDER:
+            await self.cmd_new_order_callback(query, context)
+        elif query.data == COMMAND_HELP:
+            await self.cmd_help_callback(query, context)
+        elif query.data == "confirm":
+            await self.confirm_order_callback(query, context)
+        elif query.data == "cancel":
+            await self.cancel_order_callback(query, context)
+            
+    async def cmd_new_order_callback(self, query, context):
+        """Обрабатывает нажатие кнопки создания нового заказа"""
+        # Отправляем новое сообщение с запросом описания заказа
+        await query.message.reply_text(
+            "Пожалуйста, отправьте описание заказа в свободной форме. "
+            "Включите информацию о клиенте, контактных данных, типе печати, "
+            "сроках и любых особых требованиях."
         )
+        return WAIT_ORDER_TEXT
+    
+    async def cmd_help_callback(self, query, context):
+        """Обрабатывает нажатие кнопки помощи"""
+        help_text = """
+        <b>Доступные команды:</b>
+        
+        📋 Просмотр очереди - Показать текущую очередь печати
+        ➕ Новый заказ - Создать новый заказ
+        /status ID - Проверить статус заказа по ID
+        """
+        
+        # Создаем inline-кнопки действий
+        keyboard = [
+            [InlineKeyboardButton("📋 Просмотр очереди", callback_data=COMMAND_QUEUE)],
+            [InlineKeyboardButton("➕ Новый заказ", callback_data=COMMAND_NEW_ORDER)]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await query.edit_message_text(
+            help_text, 
+            parse_mode=ParseMode.HTML,
+            reply_markup=reply_markup
+        )
+    
+    async def cmd_queue_callback(self, query, context):
+        """Обрабатывает нажатие кнопки просмотра очереди"""
+        if not self.queue_manager:
+            await query.edit_message_text("Менеджер очереди не инициализирован.")
+            return
+            
+        try:
+            # Получаем текущую очередь
+            queue = self.queue_manager.get_current_queue()
+            
+            if not queue:
+                # Создаем кнопки действий
+                keyboard = [
+                    [InlineKeyboardButton("➕ Новый заказ", callback_data=COMMAND_NEW_ORDER)],
+                    [InlineKeyboardButton("🔄 Обновить", callback_data=COMMAND_QUEUE)]
+                ]
+                reply_markup = InlineKeyboardMarkup(keyboard)
+                
+                await query.edit_message_text(
+                    "Очередь пуста. Нажмите кнопку 'Новый заказ', чтобы добавить заказ.", 
+                    reply_markup=reply_markup
+                )
+                return
+                
+            # Формируем сообщение с информацией о заказах
+            message = "<b>Текущая очередь печати:</b>\n\n"
+            
+            for i, order in enumerate(queue, 1):
+                order_id = order.get('order_id', order.get('id', 'N/A'))
+                message += f"{i}. <b>Заказ #{order_id}</b>\n"
+                message += f"   Клиент: {order.get('customer', 'Не указан')}\n"
+                message += f"   Статус: {order.get('status', 'Не указан')}\n"
+                if 'deadline' in order:
+                    message += f"   Срок: {order['deadline']}\n"
+                message += "\n"
+            
+            # Создаем кнопки действий для очереди
+            keyboard = [
+                [InlineKeyboardButton("➕ Новый заказ", callback_data=COMMAND_NEW_ORDER)],
+                [InlineKeyboardButton("🔄 Обновить", callback_data=COMMAND_QUEUE)]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            
+            await query.edit_message_text(
+                message, 
+                parse_mode=ParseMode.HTML,
+                reply_markup=reply_markup
+            )
+        except Exception as e:
+            logger.error(f"Ошибка при получении очереди: {str(e)}")
+            await query.edit_message_text(f"Произошла ошибка: {str(e)}")
 
 
 def main():
