@@ -167,7 +167,8 @@ class TelegramBot:
         
     def is_admin(self, user_id):
         """Проверяет, является ли пользователь администратором"""
-        return user_id in self.admin_ids
+        # Удалена проверка прав - все пользователи имеют полный доступ
+        return True
         
     # Обработчики команд
     async def cmd_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -194,9 +195,6 @@ class TelegramBot:
     
     async def cmd_queue(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Обрабатывает команду /queue - показывает текущую очередь печати"""
-        if not self.is_admin(update.effective_user.id):
-            await update.message.reply_text("У вас нет прав для просмотра очереди.")
-            return
             
         if not self.queue_manager:
             await update.message.reply_text("Менеджер очереди не инициализирован.")
