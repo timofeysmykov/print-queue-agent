@@ -1,5 +1,4 @@
-"""
-Модуль для обработки неструктурированных описаний заказов с помощью LLM.
+"""Модуль для обработки неструктурированных описаний заказов с помощью LLM.
 Преобразует текстовые описания в структурированные данные для дальнейшей обработки.
 """
 
@@ -8,10 +7,12 @@ import logging
 import json
 import yaml
 import datetime
-import anthropic
 import openai
 from typing import Dict, List, Any, Optional, Union
 from dotenv import load_dotenv
+
+# Импорт нашего более надежного клиента Claude API
+from claude_api import ClaudeAPIClient
 
 # Настройка логирования
 logging.basicConfig(
@@ -50,12 +51,13 @@ class LLMProcessor:
         
         # Инициализация клиента API в зависимости от провайдера
         if self.provider == 'claude':
-            self.api_key = os.getenv("CLAUDE_API_KEY")
-            if not self.api_key:
-                logger.error("API ключ Claude не найден")
-                raise ValueError("Необходимо указать CLAUDE_API_KEY в .env файле")
-            
-            self.client = anthropic.Anthropic(api_key=self.api_key)
+            # Используем наш новый надежный клиент вместо прямого вызова Anthropic API
+            try:
+                self.claude_client = ClaudeAPIClient()
+                logger.info(f"Инициализирован надежный клиент Claude API")
+            except Exception as e:
+                logger.error(f"Ошибка при инициализации клиента Claude API: {str(e)}")
+                raise ValueError(f"Ошибка при инициализации клиента Claude API: {str(e)}")
         elif self.provider == 'openai':
             self.api_key = os.getenv("OPENAI_API_KEY")
             if not self.api_key:
@@ -87,15 +89,13 @@ class LLMProcessor:
         
         try:
             if self.provider == 'claude':
-                response = self.client.messages.create(
+                # Используем наш надежный клиент Claude API
+                return self.claude_client.process_prompt(
+                    prompt=full_prompt,
                     model=self.model,
                     max_tokens=self.max_tokens,
-                    temperature=self.temperature,
-                    messages=[
-                        {"role": "user", "content": full_prompt}
-                    ]
+                    temperature=self.temperature
                 )
-                return response.content[0].text
                 
             elif self.provider == 'openai':
                 response = self.client.chat.completions.create(
@@ -124,14 +124,22 @@ class OrderProcessor:
         Args:
             config_path (str): Путь к файлу конфигурации.
         """
-        # Инициализация LLM процессора
-        self.llm = LLMProcessor(config_path)
-        
         # Загрузка конфигурации
         with open(config_path, 'r', encoding='utf-8') as file:
             self.config = yaml.safe_load(file)
+        
+        # Инициализация LLM процессора (для обратной совместимости)
+        self.llm = LLMProcessor(config_path)
+        
+        # Инициализация прямого доступа к Claude API через наш надежный клиент
+        try:
+            self.claude_client = ClaudeAPIClient()
+            logger.info("Инициализирован клиент Claude API для обработки заказов")
+        except Exception as e:
+            logger.error(f"Ошибка при инициализации клиента Claude API: {str(e)}")
+            raise ValueError(f"Ошибка при инициализации клиента Claude API: {str(e)}")
             
-        logger.info("Инициализация процессора заказов")
+        logger.info("Инициализация процессора заказов завершена")
         
     def extract_order_from_text(self, text: str) -> Dict[str, Any]:
         """
@@ -146,55 +154,30 @@ class OrderProcessor:
         """
         logger.info(f"Обработка заказа из Telegram: {text[:50]}...")
         
-        prompt = """Извлеки все данные о заказе на печать из следующего текста. 
-Верни результат в виде JSON со следующими полями:
-- customer: имя клиента или название организации
-- contact: контактные данные (телефон, email)
-- description: краткое описание заказа
-- quantity: количество копий
-- deadline: срок выполнения в формате DD.MM.YYYY
-- format: формат бумаги (A4, A3 и т.д.)
-- paper_type: тип бумаги
-- color_mode: цветная или черно-белая печать
-- duplex: односторонняя или двусторонняя печать
-- priority: приоритет (высокий, средний, низкий)
-- comment: любые дополнительные пожелания или особенности
-
-Если какие-то поля невозможно определить, оставь их пустыми.
-Включи только JSON в твой ответ, без пояснений или текста вокруг него."""
-        
         try:
-            # Обработка текста с помощью LLM
-            response = self.llm.process_text(text, prompt)
+            # Используем напрямую ClaudeAPIClient для более надежной обработки заказа
+            # Этот метод уже включает в себя извлечение JSON
+            order_data = self.claude_client.process_order_text(text)
             
-            # Извлечение JSON из ответа
-            json_data = self._extract_json(response)
+            # Проверка на наличие ошибок
+            if "error" in order_data:
+                logger.error(f"Ошибка при обработке заказа: {order_data['error']}")
+                return order_data
             
-            if not json_data:
-                logger.warning("Не удалось извлечь JSON из ответа LLM")
-                return {"error": "Не удалось извлечь данные заказа из текста"}
+            # Проверка и обработка полученных данных
+            processed_data = self._validate_and_process_order_data(order_data)
             
-            try:
-                # Преобразование строки JSON в словарь
-                order_data = json.loads(json_data)
-                
-                # Проверка и обработка полученных данных
-                processed_data = self._validate_and_process_order_data(order_data)
-                
-                # Добавляем статус "Новый" для всех заказов из Telegram
-                processed_data['status'] = 'Новый'
-                processed_data['source'] = 'telegram'
-                
-                # Генерация уникального ID заказа, если он не указан
-                if 'id' not in processed_data:
-                    timestamp = datetime.datetime.now().strftime('%Y%m%d%H%M%S')
-                    processed_data['id'] = f"TG{timestamp}"
-                
-                return processed_data
-                
-            except json.JSONDecodeError as e:
-                logger.error(f"Ошибка при разборе JSON: {str(e)}")
-                return {"error": f"Ошибка при разборе данных заказа: {str(e)}"}
+            # Добавляем статус "Новый" для всех заказов из Telegram
+            processed_data['status'] = 'Новый'
+            processed_data['source'] = 'telegram'
+            
+            # Генерация уникального ID заказа, если он не указан
+            if 'id' not in processed_data:
+                timestamp = datetime.datetime.now().strftime('%Y%m%d%H%M%S')
+                processed_data['id'] = f"TG{timestamp}"
+            
+            logger.info(f"Заказ успешно обработан: ID={processed_data.get('id', 'н/д')}")
+            return processed_data
                 
         except Exception as e:
             logger.error(f"Ошибка при обработке заказа: {str(e)}")
@@ -257,23 +240,45 @@ class OrderProcessor:
     
     def _extract_json(self, text: str) -> str:
         """
-        Извлечение JSON из текста.
+        Извлекает JSON из текста ответа LLM.
+        Этот метод теперь использует более надежный экстрактор JSON из ClaudeAPIClient.
         
         Args:
             text (str): Текст, предположительно содержащий JSON.
             
         Returns:
-            str: Строка JSON.
+            str: Строка JSON или пустая строка, если JSON не найден.
         """
-        # Поиск JSON в тексте
-        if '{' in text and '}' in text:
-            start = text.find('{')
-            end = text.rfind('}') + 1
-            return text[start:end]
+        try:
+            # Используем надежный метод извлечения JSON из нашего клиента Claude API
+            result = self.claude_client.extract_json_from_response(text)
             
-        # Если JSON не найден, возвращаем ошибку
-        logger.error(f"JSON не найден в ответе LLM: {text}")
-        raise ValueError("JSON не найден в ответе LLM")
+            # Если результат - словарь, преобразуем его обратно в строку JSON
+            if isinstance(result, dict):
+                if "error" in result:
+                    logger.warning(f"Ошибка при извлечении JSON: {result['error']}")
+                    return ""
+                return json.dumps(result, ensure_ascii=False)
+            
+            # Обратная совместимость со старым методом
+            # Поиск JSON в тексте
+            if '{' in text and '}' in text:
+                start = text.find('{')
+                end = text.rfind('}') + 1
+                return text[start:end]
+            
+            # Если JSON не найден в обычном формате, проверяем Markdown блоки кода
+            if '```json' in text and '```' in text:
+                start = text.find('```json') + 7
+                end = text.find('```', start)
+                return text[start:end].strip()
+                
+            logger.warning(f"JSON не найден в ответе LLM: {text[:100]}...")
+            return ""
+            
+        except Exception as e:
+            logger.error(f"Ошибка при извлечении JSON: {str(e)}")
+            return ""
     
     def _validate_and_process_order_data(self, order_data: Dict[str, Any]) -> Dict[str, Any]:
         """
