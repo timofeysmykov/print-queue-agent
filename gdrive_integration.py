@@ -117,23 +117,53 @@ class GoogleDriveIntegration:
             dict: Информация о найденном файле или None, если файл не найден.
         """
         try:
-            # Используем список файлов и фильтруем по имени вместо прямого запроса с именем файла
+            # Создаем запрос, который получит все файлы из папки без фильтрации по имени
             query = f"'{folder_id}' in parents and trashed = false"
-            results = self.drive_service.files().list(
-                q=query,
-                fields="files(id, name, mimeType)",
-                pageSize=100
-            ).execute()
             
-            files = results.get('files', [])
+            # Получаем все файлы в папке
+            page_token = None
+            files = []
             
-            # Фильтруем на стороне Python, чтобы избежать проблем с кодировкой
-            matching_files = [f for f in files if f.get('name') == file_name]
-            return matching_files[0] if matching_files else None
+            # Постраничный сбор всех файлов
+            while True:
+                # Запрашиваем список файлов с дополнительными параметрами для страничного сбора
+                results = self.drive_service.files().list(
+                    q=query,
+                    spaces='drive',
+                    fields="nextPageToken, files(id, name, mimeType)",
+                    pageToken=page_token,
+                    pageSize=100
+                ).execute()
+                
+                # Добавляем новые файлы в общий список
+                files.extend(results.get('files', []))
+                
+                # Если есть еще страницы, то продолжаем
+                page_token = results.get('nextPageToken')
+                if not page_token:
+                    break
+            
+            # Дополнительная фильтрация на стороне Python
+            # Используем байтовое сравнение имен, чтобы избежать проблем с кодировкой
+            matching_files = []
+            target_name = str(file_name)
+            
+            for file_item in files:
+                current_name = file_item.get('name', '')
+                if current_name == target_name:
+                    matching_files.append(file_item)
+                    logger.debug(f"Найден файл: {current_name} (ID: {file_item.get('id')})")
+            
+            if matching_files:
+                return matching_files[0]
+            
+            # Если ничего не нашли, выводим дополнительную информацию для отладки
+            logger.info(f"Файл '{file_name}' не найден в папке '{folder_id}'. Доступные файлы: {', '.join([f.get('name', 'unknown') for f in files[:10]])}...")
+            return None
             
         except Exception as e:
             logger.error(f"Ошибка при поиске файла {file_name}: {str(e)}")
-            raise
+            return None  # Возвращаем None вместо выброса исключения
     
     def find_file_by_path(self, path):
         """
