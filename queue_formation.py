@@ -12,6 +12,9 @@ from typing import Dict, List, Any, Optional
 import pandas as pd
 import yaml
 
+# Импортируем модуль для интеграции с Google Drive
+from gdrive_integration import GoogleDriveIntegration
+
 # Настройка логирования
 os.makedirs("logs", exist_ok=True)
 logging.basicConfig(
@@ -35,6 +38,7 @@ class QueueManager:
             config_path (str): Путь к файлу конфигурации.
         """
         # Загрузка конфигурации
+        self.config_path = config_path
         with open(config_path, 'r', encoding='utf-8') as file:
             self.config = yaml.safe_load(file)
         
@@ -421,12 +425,43 @@ class QueueManager:
         # Проверяем существование папки и создаем при необходимости
         os.makedirs(local_folder, exist_ok=True)
         
-        # Если файл с очередью существует, загружаем данные
+        # Пытаемся загрузить очередь из Google Drive
+        try:
+            # Получаем путь к файлу очереди в Google Drive
+            drive_queue_path = self.config.get('files', {}).get('onedrive_queue_path', '/Print/queue.xlsx')
+            
+            # Инициализируем Google Drive API
+            gdrive = GoogleDriveIntegration(config_path=self.config_path)
+            
+            # Пытаемся скачать файл из Google Drive
+            local_excel_path = gdrive.download_file(drive_queue_path, 'queue.xlsx')
+            
+            if local_excel_path:
+                logger.info(f"Успешно загружен файл очереди из Google Drive: {drive_queue_path}")
+                
+                # Загружаем очередь из Excel
+                df = pd.read_excel(local_excel_path)
+                
+                # Преобразуем DataFrame в список словарей
+                queue = self.dataframe_to_queue(df)
+                
+                # Сохраняем копию в локальный JSON для резервного копирования
+                with open(queue_file, 'w', encoding='utf-8') as f:
+                    json.dump(queue, f, ensure_ascii=False, indent=2)
+                
+                logger.info(f"Загружена очередь из Google Drive, {len(queue)} заказов")
+                return queue
+            
+        except Exception as e:
+            logger.warning(f"Не удалось загрузить очередь из Google Drive: {str(e)}")
+            logger.info("Пробуем загрузить из локального файла")
+        
+        # Если загрузка из Google Drive не удалась, пробуем загрузить из локального файла
         if os.path.exists(queue_file):
             try:
                 with open(queue_file, 'r', encoding='utf-8') as f:
                     queue = json.load(f)
-                logger.info(f"Загружена очередь из {queue_file}, {len(queue)} заказов")
+                logger.info(f"Загружена очередь из локального файла {queue_file}, {len(queue)} заказов")
                 return queue
             except Exception as e:
                 logger.error(f"Ошибка при загрузке очереди из {queue_file}: {str(e)}")
@@ -456,14 +491,31 @@ class QueueManager:
             # Сохраняем очередь в JSON формате
             with open(queue_file, 'w', encoding='utf-8') as f:
                 json.dump(queue, f, ensure_ascii=False, indent=2)
-            logger.info(f"Очередь из {len(queue)} заказов сохранена в {queue_file}")
+            logger.info(f"Очередь из {len(queue)} заказов сохранена в локальный файл {queue_file}")
             
-            # Дополнительно сохраняем в Excel формате для удобства просмотра
+            # Сохраняем в Excel формате для удобства просмотра и загрузки в Google Drive
             excel_file = os.path.join(local_folder, 'queue.xlsx')
             try:
                 df = self.queue_to_dataframe(queue)
                 df.to_excel(excel_file, index=False)
-                logger.info(f"Очередь сохранена в Excel формате: {excel_file}")
+                logger.info(f"Очередь сохранена в локальный Excel файл: {excel_file}")
+                
+                # Загружаем файл в Google Drive
+                try:
+                    # Получаем путь для сохранения в Google Drive
+                    drive_queue_path = self.config.get('files', {}).get('onedrive_queue_path', '/Print/queue.xlsx')
+                    
+                    # Инициализируем Google Drive API
+                    gdrive = GoogleDriveIntegration(config_path=self.config_path)
+                    
+                    # Загружаем локальный Excel файл в Google Drive
+                    gdrive.upload_file(excel_file, drive_queue_path)
+                    logger.info(f"Очередь успешно загружена в Google Drive: {drive_queue_path}")
+                    
+                except Exception as e:
+                    logger.error(f"Ошибка при загрузке файла очереди в Google Drive: {str(e)}")
+                    # Продолжаем выполнение, так как локальное сохранение уже выполнено
+                
             except Exception as e:
                 logger.warning(f"Не удалось сохранить очередь в Excel: {str(e)}")
             
