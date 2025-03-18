@@ -6,14 +6,16 @@
 import os
 import logging
 import json
-import yaml
 from datetime import datetime
 from pathlib import Path
 from dotenv import load_dotenv
+import io
+import time
+
 from google.oauth2 import service_account
+from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload, MediaIoBaseDownload
-import io
 
 # Настройка логирования
 logging.basicConfig(
@@ -29,71 +31,93 @@ logger = logging.getLogger("gdrive_integration")
 class GoogleDriveIntegration:
     """Класс для работы с Google Drive."""
     
-    def __init__(self, config_path="config.yaml"):
+    def __init__(self):
         """
         Инициализация интеграции с Google Drive.
-        
-        Args:
-            config_path (str): Путь к файлу конфигурации.
         """
-        # Настройка кодировки для избежания проблем
-        import sys
-        if hasattr(sys, 'setdefaultencoding'):
-            sys.setdefaultencoding('utf-8')
-            
         # Загрузка переменных окружения
         load_dotenv()
         
-        # Загрузка конфигурации
-        with open(config_path, 'r', encoding='utf-8') as file:
-            self.config = yaml.safe_load(file)
-        
         # Создание локальной директории для данных, если она не существует
-        local_data_folder = self.config.get('files', {}).get('local_data_folder', 'data/')
-        self.local_data_path = Path(local_data_folder)
+        self.local_data_path = Path("data/")
         self.local_data_path.mkdir(exist_ok=True, parents=True)
         
-        # Получение пути к файлу ключа
-        self.key_file_path = os.getenv("GOOGLE_DRIVE_KEY_PATH")
-        
-        if not self.key_file_path:
-            logger.error("Отсутствует путь к файлу ключа Google Drive API")
-            raise ValueError("Необходимо указать GOOGLE_DRIVE_KEY_PATH в .env файле")
-        
-        # Проверка существования файла ключа
-        if not os.path.exists(self.key_file_path):
-            logger.error(f"Файл ключа не найден: {self.key_file_path}")
-            raise FileNotFoundError(f"Файл ключа не найден: {self.key_file_path}")
+        # Получение ID папки Google Drive из .env
+        self.folder_id = os.getenv("GOOGLE_DRIVE_FOLDER_ID")
+        if not self.folder_id:
+            logger.error("Отсутствует ID папки Google Drive в .env файле")
+            raise ValueError("Необходимо указать GOOGLE_DRIVE_FOLDER_ID в .env файле")
         
         # Инициализация клиента Google Drive
         try:
-            # Создаем учетные данные из файла
-            self.credentials = service_account.Credentials.from_service_account_file(
-                self.key_file_path,
-                scopes=['https://www.googleapis.com/auth/drive']
-            )
+            # Создаем учетные данные из переменных окружения
+            self.credentials = self._create_credentials_from_env()
             
             # Создаем клиент Drive API
             self.drive_service = build('drive', 'v3', credentials=self.credentials)
+            
+            # Сохраняем последнюю проверку изменений файлов
+            self.last_check_time = datetime.now()
+            
             logger.info("Google Drive API клиент успешно инициализирован")
         except Exception as e:
             logger.error(f"Ошибка при инициализации Google Drive API: {str(e)}")
             raise
     
-    def list_files(self, folder_id="root"):
+    def _create_credentials_from_env(self) -> Credentials:
         """
-        Получение списка файлов из указанной папки Google Drive.
+        Создает учетные данные Google API из переменных окружения.
+        
+        Returns:
+            Credentials: Объект учетных данных для Google API.
+        """
+        try:
+            # Создаем словарь с учетными данными из переменных окружения
+            credentials_dict = {
+                "type": os.getenv("GOOGLE_DRIVE_CREDS_TYPE", "service_account"),
+                "project_id": os.getenv("GOOGLE_DRIVE_PROJECT_ID"),
+                "private_key_id": os.getenv("GOOGLE_DRIVE_PRIVATE_KEY_ID"),
+                "private_key": os.getenv("GOOGLE_DRIVE_PRIVATE_KEY").replace('\\n', '\n'),
+                "client_email": os.getenv("GOOGLE_DRIVE_CLIENT_EMAIL"),
+                "client_id": os.getenv("GOOGLE_DRIVE_CLIENT_ID"),
+                "auth_uri": os.getenv("GOOGLE_DRIVE_AUTH_URI", "https://accounts.google.com/o/oauth2/auth"),
+                "token_uri": os.getenv("GOOGLE_DRIVE_TOKEN_URI", "https://oauth2.googleapis.com/token"),
+                "auth_provider_x509_cert_url": os.getenv("GOOGLE_DRIVE_AUTH_PROVIDER_CERT_URL", "https://www.googleapis.com/oauth2/v1/certs"),
+                "client_x509_cert_url": os.getenv("GOOGLE_DRIVE_CLIENT_CERT_URL"),
+                "universe_domain": os.getenv("GOOGLE_DRIVE_UNIVERSE_DOMAIN", "googleapis.com")
+            }
+            
+            # Создаем учетные данные из словаря
+            credentials = service_account.Credentials.from_service_account_info(
+                credentials_dict,
+                scopes=['https://www.googleapis.com/auth/drive']
+            )
+            
+            return credentials
+        except Exception as e:
+            logger.error(f"Ошибка при создании учетных данных: {str(e)}")
+            raise
+    
+    def list_files(self, query=None):
+        """
+        Получение списка файлов из папки Google Drive.
         
         Args:
-            folder_id (str): ID папки в Google Drive. По умолчанию "root" для корневой папки.
-            
+            query (str, optional): Дополнительное условие запроса.
+        
         Returns:
             list: Список файлов и папок.
         """
         try:
-            query = f"'{folder_id}' in parents and trashed = false"
+            base_query = f"'{self.folder_id}' in parents and trashed = false"
+            
+            if query:
+                final_query = f"{base_query} and {query}"
+            else:
+                final_query = base_query
+                
             results = self.drive_service.files().list(
-                q=query,
+                q=final_query,
                 fields="files(id, name, mimeType, createdTime, modifiedTime, size)",
                 pageSize=1000
             ).execute()
@@ -103,323 +127,320 @@ class GoogleDriveIntegration:
             return files
         except Exception as e:
             logger.error(f"Ошибка при получении списка файлов: {str(e)}")
-            raise
+            return []
     
-    def find_file_by_name(self, file_name, folder_id="root"):
+    def find_file_by_name(self, file_name):
         """
-        Поиск файла по имени в указанной папке.
+        Поиск файла по имени в папке Google Drive.
         
         Args:
             file_name (str): Имя файла.
-            folder_id (str): ID папки в Google Drive. По умолчанию "root" для корневой папки.
             
         Returns:
             dict: Информация о найденном файле или None, если файл не найден.
         """
         try:
-            # Используем прямой запрос по ID, без использования имени файла в запросе
-            query = f"'{folder_id}' in parents and trashed = false"
+            query = f"'{self.folder_id}' in parents and name='{file_name}' and trashed = false"
             
-            # Получаем список всех файлов в папке
-            try:
-                response = self.drive_service.files().list(
-                    q=query,
-                    spaces='drive',
-                    fields="files(id, name, mimeType)",
-                    pageSize=1000  # увеличиваем размер страницы
-                ).execute()
-                
-                # Получаем список файлов
-                files = response.get('files', [])
-                
-                # Выводим список всех файлов для отладки
-                file_names = []
-                for f in files:
-                    try:
-                        file_names.append(f.get('name', 'Неизвестно'))
-                    except:
-                        file_names.append('Нечитаемое имя')
-                        
-                logger.debug(f"Найдено {len(files)} файлов в папке {folder_id}. Имена: {', '.join(file_names[:10])}...")
-
-                # Фильтрация по имени файла
-                for file_item in files:
-                    try:
-                        # Проверяем совпадение имён безопасным способом
-                        if file_item.get('name') == file_name:
-                            logger.debug(f"Найден файл: {file_name} (ID: {file_item.get('id')})")
-                            return file_item
-                    except UnicodeDecodeError:
-                        # Пропускаем файлы с проблемами кодировки
-                        continue
-                    except Exception as e:
-                        logger.error(f"Ошибка при обработке файла: {str(e)}")
-                        continue
-                        
-                logger.info(f"Файл '{file_name}' не найден в папке '{folder_id}'.")
+            response = self.drive_service.files().list(
+                q=query,
+                spaces='drive',
+                fields="files(id, name, mimeType, modifiedTime)",
+                pageSize=10  # Нам нужен только один файл
+            ).execute()
+            
+            files = response.get('files', [])
+            
+            if files:
+                logger.info(f"Найден файл: {file_name} (ID: {files[0].get('id')})")
+                return files[0]
+            else:
+                logger.info(f"Файл '{file_name}' не найден в папке Google Drive.")
                 return None
                 
-            except Exception as e:
-                logger.error(f"Ошибка при получении списка файлов: {str(e)}")
-                return None
-            
         except Exception as e:
-            logger.error(f"Полная ошибка при поиске файла {file_name}: {str(e)}")
+            logger.error(f"Ошибка при поиске файла {file_name}: {str(e)}")
             return None
     
-    def find_file_by_path(self, path):
+    def download_file(self, file_name, local_path=None):
         """
-        Поиск файла по пути (например, '/Print/orders.xlsx').
+        Скачивание файла из Google Drive по имени.
         
         Args:
-            path (str): Путь к файлу.
-            
-        Returns:
-            dict: Информация о найденном файле или None, если файл не найден.
-        """
-        try:
-            # Разделение пути на компоненты
-            components = [comp for comp in path.strip('/').split('/') if comp]
-            
-            if not components:
-                logger.error("Пустой путь к файлу")
-                return None
-            
-            parent_id = "root"
-            
-            # Навигация по директориям
-            for i, component in enumerate(components):
-                is_last = (i == len(components) - 1)
-                
-                # Логируем для отладки
-                logger.debug(f"Поиск компонента '{component}' в папке '{parent_id}'")
-                
-                if is_last:
-                    # Ищем файл в текущей директории
-                    return self.find_file_by_name(component, parent_id)
-                else:
-                    # Ищем папку
-                    folder = self.find_file_by_name(component, parent_id)
-                    if not folder:
-                        logger.error(f"Папка {component} не найдена")
-                        return None
-                    parent_id = folder['id']
-            
-            # Если мы дошли до сюда, значит что-то пошло не так
-            return None
-            
-        except Exception as e:
-            # Логируем ошибку и добавляем информацию о кодировке
-            logger.error(f"Ошибка при поиске файла по пути {path}: {str(e)}")
-            return None
-    
-    def download_file(self, file_path, local_filename=None):
-        """
-        Скачивание файла из Google Drive.
+            file_name (str): Имя файла в Google Drive.
+            local_path (str/Path, optional): Локальный путь для сохранения. 
+                                           Если не указан, файл сохраняется в data/.
         
-        Args:
-            file_path (str): Путь к файлу в Google Drive (например, '/Print/orders.xlsx').
-            local_filename (str, optional): Локальное имя файла. Если не указано, 
-                                           используется имя из Google Drive.
-                                           
         Returns:
-            str: Путь к скачанному файлу.
+            str: Путь к скачанному файлу или None при ошибке.
         """
         try:
-            # Поиск файла по пути
-            file_info = self.find_file_by_path(file_path)
+            # Поиск файла по имени
+            file_info = self.find_file_by_name(file_name)
             
             if not file_info:
-                logger.error(f"Файл {file_path} не найден")
-                raise FileNotFoundError(f"Файл {file_path} не найден в Google Drive")
+                logger.error(f"Файл {file_name} не найден в Google Drive")
+                return None
             
-            # Определение имени файла
-            if not local_filename:
-                local_filename = file_info['name']
+            file_id = file_info['id']
             
-            # Формирование пути для сохранения
-            local_path = self.local_data_path / local_filename
+            # Определяем путь для сохранения файла
+            if not local_path:
+                local_path = self.local_data_path / file_name
+            else:
+                local_path = Path(local_path)
+            
+            # Создаем директории, если их нет
+            local_path.parent.mkdir(parents=True, exist_ok=True)
             
             # Скачивание файла
-            request = self.drive_service.files().get_media(fileId=file_info['id'])
-            fh = io.BytesIO()
-            downloader = MediaIoBaseDownload(fh, request)
+            request = self.drive_service.files().get_media(fileId=file_id)
             
-            done = False
-            while not done:
-                status, done = downloader.next_chunk()
-                logger.debug(f"Скачивание {file_path}: {int(status.progress() * 100)}%")
-            
-            # Сохранение файла в бинарном режиме для предотвращения проблем с кодировкой
             with open(local_path, 'wb') as f:
-                f.write(fh.getvalue())
+                downloader = MediaIoBaseDownload(f, request)
+                done = False
+                while not done:
+                    status, done = downloader.next_chunk()
+                    logger.debug(f"Скачивание {int(status.progress() * 100)}% завершено")
             
-            logger.info(f"Файл {file_path} успешно скачан как {local_path}")
+            logger.info(f"Файл {file_name} успешно скачан: {local_path}")
             return str(local_path)
+            
         except Exception as e:
-            logger.error(f"Ошибка при скачивании файла {file_path}: {str(e)}")
-            raise
+            logger.error(f"Ошибка при скачивании файла {file_name}: {str(e)}")
+            return None
     
-    def upload_file(self, local_path, drive_path):
+    def upload_file(self, local_file_path, file_name=None):
         """
         Загрузка файла в Google Drive.
         
         Args:
-            local_path (str): Путь к локальному файлу.
-            drive_path (str): Путь назначения в Google Drive (например, '/Print/orders.xlsx').
-            
-        Returns:
-            dict: Информация о загруженном файле.
-        """
-        # Проверка существования файла
-        if not os.path.exists(local_path):
-            logger.error(f"Локальный файл {local_path} не существует")
-            raise FileNotFoundError(f"Файл {local_path} не найден")
+            local_file_path (str/Path): Локальный путь к файлу для загрузки.
+            file_name (str, optional): Имя файла в Google Drive. 
+                                     Если не указано, используется имя локального файла.
         
+        Returns:
+            bool: True если загрузка успешна, иначе False.
+        """
         try:
-            # Разделение пути на директорию и имя файла
-            path_components = drive_path.strip('/').split('/')
-            filename = path_components[-1]
-            parent_path = '/'.join(path_components[:-1])
+            local_path = Path(local_file_path)
             
-            # Получение ID родительской директории
-            parent_id = "root"
-            if parent_path:
-                for folder_name in parent_path.split('/'):
-                    folder = self.find_file_by_name(folder_name, parent_id)
-                    if not folder:
-                        # Создаем папку
-                        folder = self.create_folder(folder_name, parent_id)
-                    parent_id = folder['id']
+            # Проверка существования файла
+            if not local_path.exists():
+                logger.error(f"Локальный файл не найден: {local_file_path}")
+                return False
             
-            # Проверка, существует ли файл с таким именем
-            existing_file = self.find_file_by_name(filename, parent_id)
+            # Определение имени файла
+            if not file_name:
+                file_name = local_path.name
             
-            # Определение MIME типа файла
-            file_extension = os.path.splitext(local_path)[1].lower()
-            mime_type = "application/octet-stream"  # По умолчанию
+            # Проверяем существует ли файл с таким именем
+            existing_file = self.find_file_by_name(file_name)
             
-            if file_extension == '.xlsx':
-                mime_type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-            elif file_extension == '.csv':
-                mime_type = "text/csv"
-            elif file_extension == '.txt':
-                mime_type = "text/plain"
-            
-            # Создание медиа объекта для загрузки
-            media = MediaFileUpload(local_path, mimetype=mime_type, resumable=True)
+            # Создаем медиа-объект для загрузки
+            media = MediaFileUpload(
+                local_path,
+                resumable=True
+            )
             
             if existing_file:
                 # Обновление существующего файла
-                file_metadata = {
-                    'name': filename,
-                    'mimeType': mime_type
-                }
-                file = self.drive_service.files().update(
-                    fileId=existing_file['id'],
-                    body=file_metadata,
+                file_id = existing_file['id']
+                request = self.drive_service.files().update(
+                    fileId=file_id,
                     media_body=media
-                ).execute()
-                logger.info(f"Файл {drive_path} успешно обновлен (ID: {file['id']})")
+                )
+                logger.info(f"Обновление существующего файла: {file_name}")
             else:
                 # Создание нового файла
                 file_metadata = {
-                    'name': filename,
-                    'parents': [parent_id],
-                    'mimeType': mime_type
+                    'name': file_name,
+                    'parents': [self.folder_id]
                 }
-                file = self.drive_service.files().create(
+                request = self.drive_service.files().create(
                     body=file_metadata,
                     media_body=media,
                     fields='id'
-                ).execute()
-                logger.info(f"Файл {drive_path} успешно загружен (ID: {file['id']})")
+                )
+                logger.info(f"Создание нового файла: {file_name}")
             
-            return file
+            # Выполнение запроса на загрузку
+            response = None
+            while response is None:
+                status, response = request.next_chunk()
+                if status:
+                    logger.debug(f"Загрузка {int(status.progress() * 100)}% завершена")
+            
+            logger.info(f"Файл успешно загружен: {file_name}")
+            return True
+            
         except Exception as e:
-            logger.error(f"Ошибка при загрузке файла {drive_path}: {str(e)}")
-            raise
+            logger.error(f"Ошибка при загрузке файла {local_file_path}: {str(e)}")
+            return False
     
-    def create_folder(self, folder_name, parent_id="root"):
+    def create_folder(self, folder_name, parent_id=None):
         """
-        Создание папки в Google Drive.
+        Создание новой папки в Google Drive.
         
         Args:
-            folder_name (str): Имя создаваемой папки.
-            parent_id (str): ID родительской папки. По умолчанию "root" для корневой папки.
-            
+            folder_name (str): Имя папки.
+            parent_id (str, optional): ID родительской папки. 
+                                     Если не указано, создается в корневой папке.
+        
         Returns:
-            dict: Информация о созданной папке.
+            str: ID созданной папки или None при ошибке.
         """
         try:
-            # Проверка существования папки
-            existing_folder = self.find_file_by_name(folder_name, parent_id)
-            if existing_folder:
-                logger.info(f"Папка {folder_name} уже существует (ID: {existing_folder['id']})")
-                return existing_folder
+            if not parent_id:
+                parent_id = self.folder_id
             
-            # Создание новой папки
+            # Проверка существования папки
+            existing_folder = self.find_file_by_name(folder_name)
+            if existing_folder and existing_folder.get('mimeType') == 'application/vnd.google-apps.folder':
+                logger.info(f"Папка '{folder_name}' уже существует, ID: {existing_folder['id']}")
+                return existing_folder['id']
+            
+            # Создание метаданных папки
             folder_metadata = {
                 'name': folder_name,
                 'mimeType': 'application/vnd.google-apps.folder',
                 'parents': [parent_id]
             }
             
+            # Создание папки
             folder = self.drive_service.files().create(
                 body=folder_metadata,
-                fields='id, name, mimeType'
+                fields='id'
             ).execute()
             
-            logger.info(f"Папка {folder_name} успешно создана (ID: {folder['id']})")
-            return folder
+            folder_id = folder.get('id')
+            logger.info(f"Создана новая папка '{folder_name}', ID: {folder_id}")
+            
+            return folder_id
+            
         except Exception as e:
             logger.error(f"Ошибка при создании папки {folder_name}: {str(e)}")
-            raise
+            return None
     
-    def delete_file(self, file_path):
+    def delete_file(self, file_name):
         """
         Удаление файла из Google Drive.
         
         Args:
-            file_path (str): Путь к файлу в Google Drive.
-            
+            file_name (str): Имя файла для удаления.
+        
         Returns:
-            bool: True если удаление успешно.
+            bool: True если удаление успешно, иначе False.
         """
         try:
-            # Поиск файла по пути
-            file_info = self.find_file_by_path(file_path)
+            # Поиск файла
+            file_info = self.find_file_by_name(file_name)
             
             if not file_info:
-                logger.error(f"Файл {file_path} не найден")
+                logger.warning(f"Файл {file_name} не найден для удаления")
                 return False
             
             # Удаление файла
             self.drive_service.files().delete(fileId=file_info['id']).execute()
-            logger.info(f"Файл {file_path} успешно удален")
+            
+            logger.info(f"Файл {file_name} успешно удален")
             return True
+            
         except Exception as e:
-            logger.error(f"Ошибка при удалении файла {file_path}: {str(e)}")
-            raise
+            logger.error(f"Ошибка при удалении файла {file_name}: {str(e)}")
+            return False
+    
+    def watch_folder(self):
+        """
+        Проверяет изменения в папке Google Drive с момента последней проверки.
+        
+        Returns:
+            list: Список измененных файлов.
+        """
+        try:
+            current_time = datetime.now()
+            
+            # Формируем запрос для поиска измененных после последней проверки файлов
+            modified_time = self.last_check_time.strftime("%Y-%m-%dT%H:%M:%S")
+            query = f"modifiedTime > '{modified_time}'"
+            
+            # Получаем список измененных файлов
+            modified_files = self.list_files(query)
+            
+            # Обновляем время последней проверки
+            self.last_check_time = current_time
+            
+            if modified_files:
+                logger.info(f"Обнаружено {len(modified_files)} изменений в папке Google Drive")
+            
+            return modified_files
+            
+        except Exception as e:
+            logger.error(f"Ошибка при проверке изменений в папке: {str(e)}")
+            return []
+    
+    def get_file_content_as_string(self, file_name):
+        """
+        Получает содержимое текстового файла как строку.
+        
+        Args:
+            file_name (str): Имя файла в Google Drive.
+        
+        Returns:
+            str: Содержимое файла или None при ошибке.
+        """
+        try:
+            # Поиск файла по имени
+            file_info = self.find_file_by_name(file_name)
+            
+            if not file_info:
+                logger.error(f"Файл {file_name} не найден в Google Drive")
+                return None
+            
+            file_id = file_info['id']
+            
+            # Скачивание содержимого файла в память
+            request = self.drive_service.files().get_media(fileId=file_id)
+            file_content = io.BytesIO()
+            
+            downloader = MediaIoBaseDownload(file_content, request)
+            done = False
+            while not done:
+                status, done = downloader.next_chunk()
+            
+            file_content.seek(0)
+            content = file_content.read().decode('utf-8')
+            
+            logger.info(f"Содержимое файла {file_name} успешно прочитано")
+            return content
+            
+        except Exception as e:
+            logger.error(f"Ошибка при чтении содержимого файла {file_name}: {str(e)}")
+            return None
 
 
 if __name__ == "__main__":
     # Пример использования
     try:
-        # Инициализация
-        gdrive = GoogleDriveIntegration()
+        drive = GoogleDriveIntegration()
         
-        # Вывод списка файлов в корневой папке
-        files = gdrive.list_files()
-        print("Файлы в корневой папке:")
+        # Получение списка файлов
+        files = drive.list_files()
+        print(f"Найдено {len(files)} файлов в папке Google Drive:")
         for file in files:
-            print(f" - {file.get('name')} (ID: {file.get('id')})")
+            print(f"- {file.get('name')} ({file.get('id')})")
         
-        # Другие примеры (закомментированы для безопасности)
-        # local_file = gdrive.download_file("/Documents/example.xlsx")
-        # print(f"Файл скачан: {local_file}")
+        # Пример мониторинга изменений
+        print("\nМониторинг изменений (проверка каждые 10 секунд, 3 раза):")
+        for i in range(3):
+            time.sleep(10)
+            changes = drive.watch_folder()
+            if changes:
+                print(f"Обнаружены изменения: {len(changes)} файлов")
+                for change in changes:
+                    print(f"- {change.get('name')} (изменен: {change.get('modifiedTime')})")
+            else:
+                print("Изменений не обнаружено")
         
-        # uploaded = gdrive.upload_file("local_file.xlsx", "/Documents/uploaded.xlsx")
-        # print(f"Файл загружен: {uploaded.get('id')}")
     except Exception as e:
-        print(f"Ошибка: {str(e)}")
+        print(f"Ошибка при выполнении примера: {str(e)}")

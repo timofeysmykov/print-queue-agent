@@ -11,6 +11,7 @@ import argparse
 import time
 import threading
 import pandas as pd
+import json
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Any, Optional, Union
@@ -18,10 +19,9 @@ from dotenv import load_dotenv
 
 # Импорт других модулей проекта
 from gdrive_integration import GoogleDriveIntegration
-from data_processing import OrderProcessor
-from queue_formation import QueueManager
 from excel_editing import ExcelHandler
 from telegram_bot import TelegramBot, TelegramNotifier
+from claude_api import ClaudeAPIClient
 
 # Настройка логирования
 logging.basicConfig(
@@ -56,9 +56,8 @@ class PrintQueueAgent:
         
         # Получение путей к файлам
         self.files_config = self.config.get('files', {})
-        self.gdrive_orders_path = self.files_config.get('gdrive_orders_path', '/Print/orders.xlsx')
-        self.gdrive_queue_path = self.files_config.get('gdrive_queue_path', '/Print/queue.xlsx')
-        self.gdrive_techlists_folder = self.files_config.get('gdrive_techlists_folder', '/Print/Techlists/')
+        self.orders_filename = self.files_config.get('orders_filename', 'orders.xlsx')
+        self.queue_filename = self.files_config.get('queue_filename', 'queue.xlsx')
         self.local_data_folder = Path(self.files_config.get('local_data_folder', 'data/'))
         
         # Создание директории для данных
@@ -69,9 +68,8 @@ class PrintQueueAgent:
         self.check_interval_minutes = self.telegram_config.get('check_interval_minutes', 30)
         
         # Инициализация компонентов системы
-        self.gdrive = GoogleDriveIntegration(config_path)
-        self.order_processor = OrderProcessor(config_path)
-        self.queue_manager = QueueManager(config_path)
+        self.gdrive = GoogleDriveIntegration()
+        self.claude_client = ClaudeAPIClient()
         self.excel_handler = ExcelHandler(config_path)
         
         # Инициализация Telegram-компонентов
@@ -82,8 +80,7 @@ class PrintQueueAgent:
             self.notifier = TelegramNotifier(self.telegram_token, self.admin_chat_ids)
             self.telegram_bot = TelegramBot(
                 self.telegram_token,
-                data_processor=self.order_processor,
-                queue_manager=self.queue_manager
+                self
             )
         else:
             logger.warning("Не указан токен Telegram-бота. Уведомления через Telegram недоступны.")
@@ -106,27 +103,31 @@ class PrintQueueAgent:
         try:
             # Скачивание файла с заказами
             orders_local_path = self.gdrive.download_file(
-                self.gdrive_orders_path, 
-                Path(self.gdrive_orders_path).name
+                self.orders_filename,
+                self.local_data_folder / self.orders_filename
             )
+            
+            if not orders_local_path:
+                logger.error(f"Не удалось скачать файл заказов {self.orders_filename}")
+                return {}
+                
             logger.info(f"Файл заказов скачан: {orders_local_path}")
             
             # Проверка существования файла очереди
-            try:
-                # Попытка скачать существующий файл очереди
-                queue_local_path = self.gdrive.download_file(
-                    self.gdrive_queue_path, 
-                    Path(self.gdrive_queue_path).name
-                )
-                logger.info(f"Файл очереди скачан: {queue_local_path}")
-            except Exception as e:
-                logger.warning(f"Файл очереди не найден: {str(e)}")
+            queue_local_path = self.gdrive.download_file(
+                self.queue_filename,
+                self.local_data_folder / self.queue_filename
+            )
+            
+            if not queue_local_path:
+                logger.warning(f"Файл очереди не найден, создаем новый")
                 # Создание нового файла очереди
-                queue_file_name = Path(self.gdrive_queue_path).name
                 queue_local_path = self.excel_handler.create_empty_queue_file(
-                    self.local_data_folder / queue_file_name
+                    self.local_data_folder / self.queue_filename
                 )
                 logger.info(f"Создан новый файл очереди: {queue_local_path}")
+            else:
+                logger.info(f"Файл очереди скачан: {queue_local_path}")
             
             return {
                 "orders": orders_local_path,
@@ -134,43 +135,53 @@ class PrintQueueAgent:
             }
         except Exception as e:
             logger.error(f"Ошибка при скачивании файлов: {str(e)}")
-            raise
+            return {}
     
-    def upload_files_to_gdrive(self, files: Dict[str, str]) -> None:
+    def upload_files_to_gdrive(self, files: Dict[str, str]) -> bool:
         """
         Загрузка обновленных файлов в Google Drive.
         
         Args:
             files (Dict[str, str]): Словарь с путями к файлам для загрузки.
+            
+        Returns:
+            bool: True если все файлы успешно загружены, иначе False.
         """
         logger.info("Загрузка файлов в Google Drive")
         
         try:
+            all_successful = True
+            
             # Загрузка файла очереди
             if "queue" in files:
-                self.gdrive.upload_file(
-                    files["queue"],
-                    self.gdrive_queue_path
-                )
-                logger.info(f"Файл очереди загружен: {self.gdrive_queue_path}")
+                result = self.gdrive.upload_file(files["queue"])
+                if result:
+                    logger.info(f"Файл очереди успешно загружен")
+                else:
+                    logger.error(f"Не удалось загрузить файл очереди")
+                    all_successful = False
             
             # Загрузка других файлов при необходимости
-            if "orders" in files and files["orders"] != self.local_data_folder / Path(self.gdrive_orders_path).name:
-                self.gdrive.upload_file(
-                    files["orders"],
-                    self.gdrive_orders_path
-                )
-                logger.info(f"Файл заказов загружен: {self.gdrive_orders_path}")
+            if "orders" in files and files["orders"] != str(self.local_data_folder / self.orders_filename):
+                result = self.gdrive.upload_file(files["orders"])
+                if result:
+                    logger.info(f"Файл заказов успешно загружен")
+                else:
+                    logger.error(f"Не удалось загрузить файл заказов")
+                    all_successful = False
+                    
+            return all_successful
+                    
         except Exception as e:
             logger.error(f"Ошибка при загрузке файлов: {str(e)}")
-            raise
+            return False
     
-    def process_orders(self, orders_file_path: str) -> List[Dict[str, Any]]:
+    def process_orders_with_claude(self, orders_file_path: str) -> List[Dict[str, Any]]:
         """
-        Обработка описаний заказов из файла.
+        Обработка заказов из Excel-файла с использованием Claude 3.5 Haiku.
         
         Args:
-            orders_file_path (str): Путь к файлу с описаниями заказов.
+            orders_file_path (str): Путь к файлу с заказами.
             
         Returns:
             List[Dict[str, Any]]: Список структурированных данных заказов.
@@ -178,315 +189,377 @@ class PrintQueueAgent:
         logger.info(f"Обработка заказов из файла: {orders_file_path}")
         
         try:
-            # Извлечение описаний заказов
-            descriptions = self.excel_handler.extract_order_descriptions(orders_file_path)
-            logger.info(f"Извлечено {len(descriptions)} описаний заказов")
+            # Чтение данных из Excel
+            df = self.excel_handler.read_excel(orders_file_path)
             
-            # Обработка описаний
-            processed_orders = self.order_processor.batch_process_orders(descriptions)
-            logger.info(f"Обработано {len(processed_orders)} заказов")
+            if df.empty:
+                logger.warning("Файл заказов пуст или имеет неверный формат")
+                return []
             
-            return processed_orders
+            # Преобразование DataFrame в JSON для Claude
+            orders_data = df.to_dict(orient='records')
+            orders_json = json.dumps(orders_data, ensure_ascii=False, indent=2)
+            
+            # Обработка данных заказов через Claude
+            processed_data = self.claude_client.process_excel_data(orders_json)
+            
+            # Проверка на наличие ошибок
+            if "error" in processed_data:
+                logger.error(f"Ошибка обработки данных через Claude: {processed_data['error']}")
+                return []
+            
+            # Получение очереди заказов
+            queue = processed_data.get("queue", [])
+            logger.info(f"Claude успешно обработал {len(queue)} заказов")
+            
+            return queue
         except Exception as e:
-            logger.error(f"Ошибка при обработке заказов: {str(e)}")
+            logger.error(f"Ошибка при обработке заказов через Claude: {str(e)}")
             return []
     
-    def update_queue(self, new_orders: List[Dict[str, Any]], queue_file_path: str) -> Dict[str, Any]:
+    def update_queue(self, processed_orders: List[Dict[str, Any]], queue_file_path: str) -> Dict[str, Any]:
         """
-        Обновление очереди печати с учетом новых заказов.
+        Обновление очереди печати с учетом новых обработанных заказов.
         
         Args:
-            new_orders (List[Dict[str, Any]]): Список новых заказов.
+            processed_orders (List[Dict[str, Any]]): Список обработанных заказов.
             queue_file_path (str): Путь к файлу с текущей очередью.
             
         Returns:
-            Dict[str, Any]: Результаты обновления очереди.
+            Dict[str, Any]: Результат обновления очереди.
         """
         logger.info(f"Обновление очереди печати: {queue_file_path}")
         
         try:
-            # Чтение текущей очереди
-            current_queue_df = self.excel_handler.read_excel(queue_file_path)
+            # Преобразование в DataFrame
+            new_queue_df = pd.DataFrame(processed_orders)
             
-            # Преобразование DataFrame в список словарей
-            if not current_queue_df.empty:
-                current_queue = current_queue_df.to_dict(orient='records')
-            else:
-                current_queue = []
+            if new_queue_df.empty:
+                logger.warning("Нет новых заказов для добавления в очередь")
+                return {"status": "no_changes", "queue_file": queue_file_path}
             
-            logger.info(f"Текущая очередь содержит {len(current_queue)} заказов")
+            # Обновление файла очереди
+            updated_file = self.excel_handler.update_excel(
+                queue_file_path, 
+                new_queue_df,
+                sheet_name="Очередь печати",
+                key_column="order_id"
+            )
             
-            # Объединение новых заказов с текущей очередью
-            updated_queue = self.queue_manager.merge_with_existing_queue(new_orders, current_queue)
-            logger.info(f"Обновленная очередь содержит {len(updated_queue)} заказов")
-            
-            # Определение проблемных заказов
-            problematic_orders = self.queue_manager.identify_problematic_orders(updated_queue)
-            
-            # Определение срочных заказов
-            emergency_threshold = self.config.get('queue', {}).get('emergency_threshold_days', 3)
-            urgent_orders = [
-                order for order in updated_queue 
-                if self.queue_manager._calculate_days_to_deadline(order.get('deadline', '')) <= emergency_threshold
-            ]
-            
-            # Преобразование обновленной очереди в DataFrame
-            updated_queue_df = self.queue_manager.queue_to_dataframe(updated_queue)
-            
-            # Сохранение очереди в Excel
-            self.excel_handler.write_excel(updated_queue_df, queue_file_path)
-            logger.info(f"Очередь сохранена в файл: {queue_file_path}")
-            
+            logger.info(f"Очередь печати обновлена: {updated_file}")
             return {
-                "queue": updated_queue,
-                "problematic_orders": problematic_orders,
-                "urgent_orders": urgent_orders,
-                "queue_file": queue_file_path
+                "status": "updated",
+                "queue_file": updated_file,
+                "queue_data": processed_orders
             }
         except Exception as e:
             logger.error(f"Ошибка при обновлении очереди: {str(e)}")
-            raise
+            return {"status": "error", "error": str(e)}
     
-    def send_notifications(self, queue_data: Dict[str, Any]) -> None:
+    def generate_queue_summary(self, processed_orders: List[Dict[str, Any]]) -> str:
         """
-        Отправка уведомлений на основе данных очереди.
+        Генерация текстовой сводки по очереди печати с использованием Claude 3.5 Haiku.
         
         Args:
-            queue_data (Dict[str, Any]): Данные очереди.
+            processed_orders (List[Dict[str, Any]]): Список обработанных заказов.
+            
+        Returns:
+            str: Текстовая сводка.
         """
-        logger.info("Отправка уведомлений")
-        
         try:
-            # Получение данных
-            queue = queue_data.get('queue', [])
-            problematic_orders = queue_data.get('problematic_orders', [])
-            urgent_orders = queue_data.get('urgent_orders', [])
+            # Если заказов нет, возвращаем базовое сообщение
+            if not processed_orders:
+                return "Очередь печати пуста. Нет активных заказов."
             
-            # Отправка уведомлений о срочных заказах
-            if urgent_orders:
-                self.notifier.send_urgent_orders_notification(urgent_orders)
-            
-            # Отправка уведомлений о проблемных заказах
-            if problematic_orders:
-                self.notifier.send_problematic_orders_notification(problematic_orders)
-            
-            # Ежедневный отчет
-            # Проверяем, нужно ли отправлять ежедневный отчет
-            send_daily = self.notifications_config.get('frequency', {}).get('send_daily_summary', False)
-            if send_daily:
-                daily_time = self.notifications_config.get('frequency', {}).get('daily_summary_time', '18:00')
-                current_time = datetime.now().strftime('%H:%M')
-                
-                # Если текущее время близко к времени отправки (в пределах 5 минут)
-                hour, minute = map(int, daily_time.split(':'))
-                current_hour, current_minute = map(int, current_time.split(':'))
-                
-                if hour == current_hour and abs(minute - current_minute) <= 5:
-                    self.notifier.send_daily_summary(queue, urgent_orders, problematic_orders)
-                    logger.info("Отправлен ежедневный отчет")
-        except Exception as e:
-            logger.error(f"Ошибка при отправке уведомлений: {str(e)}")
-    
-    def update_web_interface(self, queue_data: Dict[str, Any]) -> None:
-        """
-        Обновление данных для веб-интерфейса.
-        
-        Args:
-            queue_data (Dict[str, Any]): Данные очереди.
-        """
-        logger.info("Обновление данных для веб-интерфейса")
-        
-        try:
-            # Здесь мы могли бы использовать веб-интерфейс для обновления данных,
-            # но для упрощения просто сохраним их в JSON файл, который будет прочитан веб-приложением
-            
-            # Получение данных
-            queue = queue_data.get('queue', [])
-            problematic_orders = queue_data.get('problematic_orders', [])
-            
-            # Сохранение данных для веб-интерфейса
-            web_data_path = self.local_data_folder / "web_queue_data.json"
-            
-            data = {
-                "queue": queue,
-                "problematic_orders": problematic_orders,
-                "last_updated": datetime.now().strftime('%d.%m.%Y %H:%M:%S')
+            # Формирование сводки с помощью Claude
+            queue_data = {
+                "queue": processed_orders,
+                "optimization_notes": "Очередь сформирована на основе приоритетов и сроков выполнения",
+                "estimated_total_completion_time": "Ориентировочное время выполнения всех заказов: 2 рабочих дня"
             }
             
-            with open(web_data_path, 'w', encoding='utf-8') as file:
-                import json
-                json.dump(data, file, ensure_ascii=False, indent=2)
+            summary = self.claude_client.summarize_orders_and_queue(processed_orders, queue_data)
+            logger.info("Сводка по очереди печати успешно сгенерирована")
             
-            logger.info(f"Данные для веб-интерфейса сохранены: {web_data_path}")
+            return summary
         except Exception as e:
-            logger.error(f"Ошибка при обновлении данных для веб-интерфейса: {str(e)}")
+            logger.error(f"Ошибка при генерации сводки: {str(e)}")
+            return f"Не удалось сгенерировать сводку: {str(e)}"
+    
+    def generate_order_report(self, order_data: Dict[str, Any]) -> str:
+        """
+        Генерация отчета о выполнении заказа с использованием Claude 3.5 Haiku.
+        
+        Args:
+            order_data (Dict[str, Any]): Данные о заказе.
+            
+        Returns:
+            str: Отформатированный отчет.
+        """
+        try:
+            # Генерация отчета с помощью Claude
+            report = self.claude_client.generate_report(order_data)
+            logger.info(f"Отчет для заказа успешно сгенерирован")
+            return report
+        except Exception as e:
+            logger.error(f"Ошибка при генерации отчета: {str(e)}")
+            return f"Не удалось сгенерировать отчет: {str(e)}"
+    
+    def process_order_text(self, order_text: str) -> Dict[str, Any]:
+        """
+        Обработка текстового описания заказа с использованием Claude 3.5 Haiku.
+        
+        Args:
+            order_text (str): Текстовое описание заказа.
+            
+        Returns:
+            Dict[str, Any]: Структурированные данные заказа.
+        """
+        try:
+            # Обработка текста заказа через Claude
+            order_data = self.claude_client.process_order_text(order_text)
+            
+            if "error" in order_data:
+                logger.error(f"Ошибка при обработке текста заказа: {order_data['error']}")
+                return {"error": "Не удалось обработать текст заказа"}
+            
+            logger.info("Текст заказа успешно обработан")
+            return order_data
+        except Exception as e:
+            logger.error(f"Ошибка при обработке текста заказа: {str(e)}")
+            return {"error": f"Ошибка при обработке: {str(e)}"}
+    
+    def send_notifications(self, summary: str, queue_data: List[Dict[str, Any]]) -> bool:
+        """
+        Отправка уведомлений пользователям через Telegram.
+        
+        Args:
+            summary (str): Текстовая сводка для отправки.
+            queue_data (List[Dict[str, Any]]): Данные очереди печати.
+            
+        Returns:
+            bool: True если уведомления успешно отправлены, иначе False.
+        """
+        try:
+            # Проверка доступности Telegram-уведомлений
+            if not hasattr(self, 'notifier') or not self.notifier:
+                logger.warning("Telegram-уведомления недоступны")
+                return False
+                
+            # Отправка общей сводки всем администраторам
+            self.notifier.send_notification(
+                f"<b>Обновление очереди печати</b>\n\n{summary}"
+            )
+            
+            # Отправка срочных уведомлений для высокоприоритетных заказов
+            high_priority_count = 0
+            for order in queue_data:
+                priority = order.get("priority", "").lower()
+                if priority == "высокий":
+                    high_priority_msg = f"⚠️ <b>Срочный заказ:</b> {order.get('description', 'Нет описания')}\n"
+                    high_priority_msg += f"Заказчик: {order.get('customer', 'Не указан')}\n"
+                    high_priority_msg += f"Срок: {order.get('deadline', 'Не указан')}"
+                    
+                    self.notifier.send_notification(high_priority_msg)
+                    high_priority_count += 1
+            
+            logger.info(f"Уведомления успешно отправлены (включая {high_priority_count} срочных)")
+            return True
+        except Exception as e:
+            logger.error(f"Ошибка при отправке уведомлений: {str(e)}")
+            return False
+    
+    def monitor_file_changes(self) -> None:
+        """
+        Мониторинг изменений в файлах на Google Drive.
+        Запускается в отдельном потоке.
+        """
+        logger.info("Запущен мониторинг изменений файлов")
+        
+        while self.should_run:
+            try:
+                # Проверка обновлений в Google Drive
+                changed_files = self.gdrive.watch_folder()
+                
+                if changed_files:
+                    logger.info(f"Обнаружены изменения в {len(changed_files)} файлах")
+                    
+                    # Проверяем, изменился ли файл заказов
+                    orders_changed = any(
+                        file.get('name') == self.orders_filename 
+                        for file in changed_files
+                    )
+                    
+                    if orders_changed:
+                        logger.info("Файл заказов был изменен, запускаем обработку")
+                        self.run_queue_processing()
+                    else:
+                        logger.info("Изменения не касаются файла заказов")
+                
+                # Ожидание до следующей проверки
+                sleep_interval = self.check_interval_minutes * 60
+                for _ in range(sleep_interval):
+                    if not self.should_run:
+                        break
+                    time.sleep(1)
+                    
+            except Exception as e:
+                logger.error(f"Ошибка при мониторинге файлов: {str(e)}")
+                time.sleep(60)  # Пауза перед повторной попыткой
     
     def run_queue_processing(self) -> Dict[str, Any]:
         """
-        Выполнение полного цикла обработки очереди печати.
+        Запуск полного цикла обработки очереди.
+        Включает скачивание файлов, обработку заказов, обновление очереди и отправку уведомлений.
         
         Returns:
-            Dict[str, Any]: Результаты обработки.
+            Dict[str, Any]: Результат обработки.
         """
-        logger.info("Запуск полного цикла обработки очереди печати")
+        logger.info("Запуск цикла обработки очереди печати")
         
         try:
             # Скачивание файлов из Google Drive
             files = self.download_files_from_gdrive()
             
-            # Обработка заказов
-            processed_orders = self.process_orders(files["orders"])
+            if not files or "orders" not in files or "queue" not in files:
+                logger.error("Не удалось получить необходимые файлы для обработки")
+                return {"status": "error", "message": "Ошибка при скачивании файлов"}
+            
+            # Обработка заказов с использованием Claude
+            processed_orders = self.process_orders_with_claude(files["orders"])
+            
+            if not processed_orders:
+                logger.warning("Нет заказов для обработки или произошла ошибка")
+                return {"status": "no_orders", "message": "Нет заказов для обработки"}
             
             # Обновление очереди
-            queue_data = self.update_queue(processed_orders, files["queue"])
+            queue_result = self.update_queue(processed_orders, files["queue"])
             
-            # Загрузка обновленных файлов в Google Drive
-            self.upload_files_to_gdrive({"queue": queue_data["queue_file"]})
+            if queue_result["status"] == "error":
+                logger.error(f"Ошибка при обновлении очереди: {queue_result.get('error')}")
+                return {"status": "error", "message": f"Ошибка при обновлении очереди: {queue_result.get('error')}"}
+            
+            # Загрузка обновленных файлов обратно в Google Drive
+            upload_success = self.upload_files_to_gdrive({
+                "queue": queue_result["queue_file"]
+            })
+            
+            # Генерация сводки по очереди
+            queue_summary = self.generate_queue_summary(processed_orders)
             
             # Отправка уведомлений
-            self.send_notifications(queue_data)
+            notification_sent = self.send_notifications(queue_summary, processed_orders)
             
-            # Обновление данных для веб-интерфейса
-            self.update_web_interface(queue_data)
+            return {
+                "status": "success",
+                "processed_orders": len(processed_orders),
+                "upload_success": upload_success,
+                "notification_sent": notification_sent,
+                "summary": queue_summary
+            }
             
-            logger.info("Цикл обработки очереди печати завершен успешно")
-            return queue_data
         except Exception as e:
-            logger.error(f"Ошибка при обработке очереди печати: {str(e)}")
-            return {}
+            logger.error(f"Ошибка при обработке очереди: {str(e)}")
+            return {"status": "error", "message": f"Ошибка при обработке очереди: {str(e)}"}
     
-    def start_background_thread(self) -> None:
-        """Запуск фонового потока для периодической обработки очереди."""
+    def start_monitoring(self) -> threading.Thread:
+        """
+        Запускает мониторинг изменений файлов в фоновом режиме.
         
-        def background_task():
-            """Фоновая задача для периодической обработки."""
-            logger.info("Запуск фоновой задачи для периодической обработки")
-            
-            while self.should_run:
-                try:
-                    # Выполнение цикла обработки
-                    self.run_queue_processing()
-                    
-                    # Ожидание перед следующим циклом
-                    for _ in range(self.check_interval_minutes * 60):
-                        if not self.should_run:
-                            break
-                        time.sleep(1)
-                except Exception as e:
-                    logger.error(f"Ошибка в фоновой задаче: {str(e)}")
-                    # Ожидание перед повторной попыткой
-                    time.sleep(60)
+        Returns:
+            threading.Thread: Объект потока мониторинга.
+        """
+        if self.background_thread and self.background_thread.is_alive():
+            logger.warning("Мониторинг файлов уже запущен")
+            return self.background_thread
         
-        # Создание и запуск потока
-        self.background_thread = threading.Thread(target=background_task)
-        self.background_thread.daemon = True
+        self.should_run = True
+        self.background_thread = threading.Thread(
+            target=self.monitor_file_changes,
+            daemon=True
+        )
         self.background_thread.start()
+        logger.info("Мониторинг файлов запущен в фоновом режиме")
         
-        logger.info("Фоновый поток запущен")
+        return self.background_thread
     
-    def stop_background_thread(self) -> None:
-        """Остановка фонового потока."""
+    def stop_monitoring(self) -> None:
+        """Останавливает мониторинг изменений файлов."""
+        if not self.background_thread or not self.background_thread.is_alive():
+            logger.warning("Мониторинг файлов не был запущен")
+            return
+        
+        logger.info("Остановка мониторинга файлов...")
         self.should_run = False
-        if self.background_thread:
-            self.background_thread.join(timeout=5)
-        logger.info("Фоновый поток остановлен")
+        self.background_thread.join(timeout=10)  # Ожидание завершения потока
+        logger.info("Мониторинг файлов остановлен")
     
-    def run_cli(self) -> None:
-        """Запуск приложения в режиме командной строки."""
-        parser = argparse.ArgumentParser(description="Агент очереди печати")
-        
-        parser.add_argument('--run-once', action='store_true', 
-                          help='Выполнить однократную обработку очереди')
-        parser.add_argument('--background', action='store_true', 
-                          help='Запустить фоновую обработку очереди')
-        parser.add_argument('--download-files', action='store_true', 
-                          help='Скачать файлы из Google Drive')
-        parser.add_argument('--upload-files', action='store_true', 
-                          help='Загрузить файлы в Google Drive')
-        parser.add_argument('--report', action='store_true', 
-                          help='Сформировать отчет об очереди')
-        
-        args = parser.parse_args()
-        
-        if args.run_once:
-            # Однократная обработка
-            self.run_queue_processing()
-        elif args.background:
-            # Запуск фоновой обработки
-            self.start_background_thread()
-            
-            try:
-                print("Фоновая обработка запущена. Нажмите Ctrl+C для остановки.")
-                while True:
-                    time.sleep(1)
-            except KeyboardInterrupt:
-                print("Остановка фоновой обработки...")
-                self.stop_background_thread()
-        elif args.download_files:
-            # Скачивание файлов
-            files = self.download_files_from_gdrive()
-            print(f"Файлы скачаны: {files}")
-        elif args.upload_files:
-            # Загрузка файлов
-            # Определение файлов для загрузки
-            queue_file = self.local_data_folder / Path(self.gdrive_queue_path).name
-            if queue_file.exists():
-                self.upload_files_to_gdrive({"queue": str(queue_file)})
-                print(f"Файл очереди загружен: {self.gdrive_queue_path}")
-            else:
-                print(f"Файл очереди не найден: {queue_file}")
-        elif args.report:
-            # Формирование отчета
-            # Сначала скачиваем файл очереди
-            files = self.download_files_from_gdrive()
-            
-            # Чтение очереди
-            queue_df = self.excel_handler.read_excel(files["queue"])
-            queue = queue_df.to_dict(orient='records')
-            
-            # Формирование отчета
-            report = self.queue_manager.generate_queue_report(queue)
-            
-            print(report)
+    def start_telegram_bot(self) -> None:
+        """Запускает Telegram-бота."""
+        if hasattr(self, 'telegram_bot') and self.telegram_bot:
+            logger.info("Запуск Telegram-бота")
+            self.telegram_bot.start_polling()
         else:
-            logger.info("Запуск режима по умолчанию: Telegram-бот и обработка очереди")
-            
-            # Запуск фоновой обработки очереди
-            self.start_background_thread()
-            
-            # Запуск Telegram-бота, если он инициализирован
-            if hasattr(self, 'telegram_bot'):
-                print("Запуск Telegram-бота...")
-                print("Для завершения работы нажмите Ctrl+C")
-                try:
-                    # Сначала запускаем однократную обработку очереди
-                    self.run_queue_processing()
-                    
-                    # Добавляем администраторов в бота
-                    self.telegram_bot.admin_ids = self.admin_chat_ids
-                    
-                    # Запускаем бота
-                    self.telegram_bot.start()
-                except KeyboardInterrupt:
-                    # Остановка фонового потока при завершении
-                    logger.info("Получен сигнал завершения. Останавливаю фоновые потоки...")
-                    self.stop_background_thread()
-                    print("Работа завершена.")
-            else:
-                # Если бот не инициализирован, запускаем однократную обработку по умолчанию
-                logger.info("Бот не инициализирован. Запускаем однократную обработку...")
-                self.run_queue_processing()
+            logger.warning("Telegram-бот не инициализирован")
+    
+    def run_agent(self, monitor=True, telegram=True) -> None:
+        """
+        Запускает агента очереди печати со всеми активными компонентами.
+        
+        Args:
+            monitor (bool): Запустить мониторинг файлов.
+            telegram (bool): Запустить Telegram-бота.
+        """
+        logger.info("Запуск агента очереди печати")
+        
+        # Первичная обработка очереди
+        initial_result = self.run_queue_processing()
+        logger.info(f"Результат начальной обработки: {initial_result}")
+        
+        # Запуск мониторинга файлов
+        if monitor:
+            self.start_monitoring()
+        
+        # Запуск Telegram-бота
+        if telegram and hasattr(self, 'telegram_bot') and self.telegram_bot:
+            self.start_telegram_bot()
+        
+        logger.info("Агент очереди печати успешно запущен")
 
 
 def main():
     """Точка входа в приложение."""
-    try:
-        agent = PrintQueueAgent()
-        agent.run_cli()
-    except Exception as e:
-        logger.error(f"Ошибка при запуске агента: {str(e)}")
-        print(f"Ошибка: {str(e)}")
-        sys.exit(1)
+    parser = argparse.ArgumentParser(description="Агент очереди печати с интеграцией Claude 3.5 Haiku")
+    parser.add_argument('--config', type=str, default='config.yaml', help='Путь к файлу конфигурации')
+    parser.add_argument('--no-monitor', action='store_true', help='Отключить мониторинг изменений файлов')
+    parser.add_argument('--no-telegram', action='store_true', help='Отключить Telegram-бота')
+    parser.add_argument('--process-once', action='store_true', help='Выполнить однократную обработку очереди без запуска сервисов')
+    
+    args = parser.parse_args()
+    
+    # Инициализация агента
+    agent = PrintQueueAgent(config_path=args.config)
+    
+    if args.process_once:
+        # Только однократная обработка без запуска сервисов
+        result = agent.run_queue_processing()
+        print(f"Результат обработки очереди: {json.dumps(result, ensure_ascii=False, indent=2)}")
+    else:
+        # Запуск агента с указанными флагами
+        agent.run_agent(
+            monitor=not args.no_monitor,
+            telegram=not args.no_telegram
+        )
+        
+        try:
+            # Бесконечный цикл для поддержания работы основного потока
+            while True:
+                time.sleep(1)
+        except KeyboardInterrupt:
+            # Корректное завершение при нажатии Ctrl+C
+            print("\nЗавершение работы агента...")
+            agent.stop_monitoring()
+            print("Работа агента завершена")
 
 
 if __name__ == "__main__":
