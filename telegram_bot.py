@@ -524,11 +524,12 @@ class TelegramBot:
                 
                 # Отправляем окончательное подтверждение создания заказа
                 await update.message.reply_text(
-                    f"✅ Заказ успешно создан с ID: {order_id}\n"
-                    f"Вы можете проверить его статус командой /status {order_id}\n"
-                    f"Выберите дальнейшее действие:",
-                    reply_markup=reply_markup,
-                    parse_mode=ParseMode.HTML
+                    f"✅ Заказ успешно создан!\n\n"
+                    f"Заказ добавлен в очередь печати и сохранен на Google Drive.\n"
+                    f"Оригинальный файл на Google Drive сохранён, создана новая версия.\n\n"
+                    f"Что вы хотите сделать дальше?",
+                    parse_mode=ParseMode.HTML,
+                    reply_markup=reply_markup
                 )
             else:
                 await update.message.reply_text(
@@ -644,7 +645,6 @@ class TelegramBot:
                 # Финальное сообщение о создании заказа
                 await query.edit_message_text(
                     f"✅ Заказ успешно создан!\n\n"
-                    f"<b>Номер заказа:</b> {order_id}\n\n"
                     f"Заказ добавлен в очередь печати и сохранен на Google Drive.\n"
                     f"Оригинальный файл на Google Drive сохранён, создана новая версия.\n\n"
                     f"Что вы хотите сделать дальше?",
