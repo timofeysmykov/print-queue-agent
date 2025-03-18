@@ -24,14 +24,13 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Состояния разговора с ботом
-WAIT_ORDER_TEXT, WAIT_CONFIRM, WAIT_QUESTION, AI_CONVERSATION = range(4)
+WAIT_ORDER_TEXT, WAIT_CONFIRM, WAIT_AI_DESCRIPTION, PROCESSING_AI_REQUEST = range(4)
 
 # Команды для обработки действий с кнопок
 COMMAND_NEW_ORDER = 'new_order'
 COMMAND_QUEUE = 'view_queue'
 COMMAND_STATUS = 'check_status'
 COMMAND_HELP = 'help'
-COMMAND_ASK_AI = 'ask_ai'
 COMMAND_EXIT_AI = 'exit_ai'
 
 class TelegramNotifier:
@@ -179,9 +178,6 @@ class TelegramBot:
         self.application.add_handler(CommandHandler("queue", self.cmd_queue))
         self.application.add_handler(CommandHandler("status", self.cmd_status))
         
-        # Команда для запуска диалога с Claude AI
-        self.application.add_handler(CommandHandler("ask", self.cmd_ask_ai))
-        
         # Обработчик разговора для создания нового заказа
         order_conv_handler = ConversationHandler(
             entry_points=[
@@ -201,21 +197,16 @@ class TelegramBot:
         )
         self.application.add_handler(order_conv_handler)
         
-        # Обработчик разговора с Claude AI
+        # Обработчик для взаимодействия с AI
         ai_conv_handler = ConversationHandler(
             entry_points=[
-                CommandHandler("ask", self.cmd_ask_ai),
-                CallbackQueryHandler(self.button_callback, pattern=f"^{COMMAND_ASK_AI}$")
+                CommandHandler("ai", self.cmd_start_ai_interaction)
             ],
             states={
-                WAIT_QUESTION: [MessageHandler(filters.TEXT & ~filters.COMMAND, self.process_ai_question)],
-                AI_CONVERSATION: [
-                    MessageHandler(filters.TEXT & ~filters.COMMAND, self.continue_ai_conversation),
-                    CommandHandler("exit", self.exit_ai_conversation),
-                    CallbackQueryHandler(self.exit_ai_callback, pattern=f"^{COMMAND_EXIT_AI}$")
-                ]
+                WAIT_AI_DESCRIPTION: [MessageHandler(filters.TEXT & ~filters.COMMAND, self.process_ai_description)],
+                PROCESSING_AI_REQUEST: [CommandHandler("cancel", self.cancel_ai_request)]
             },
-            fallbacks=[CommandHandler("exit", self.exit_ai_conversation)]
+            fallbacks=[CommandHandler("cancel", self.cancel_ai_request)]
         )
         self.application.add_handler(ai_conv_handler)
         
@@ -227,7 +218,7 @@ class TelegramBot:
         
         # Обработчик любых других сообщений
         self.application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.echo))
-        
+
     async def clean_bot_state(self):
         """Очищает состояние бота перед запуском, удаляя все webhook'и и pending updates.
         Это предотвращает конфликты между несколькими экземплярами бота.
@@ -287,7 +278,7 @@ class TelegramBot:
         # Создаем клавиатуру основных действий
         keyboard = [
             [KeyboardButton("📋 Просмотр очереди"), KeyboardButton("➕ Новый заказ")],
-            [KeyboardButton("🤖 Спросить AI"), KeyboardButton("❓ Помощь")]
+            [KeyboardButton("❓ Помощь")]
         ]
         reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
         
@@ -304,19 +295,17 @@ class TelegramBot:
         
         📋 Просмотр очереди - Показать текущую очередь печати
         ➕ Новый заказ - Создать новый заказ
-        🤖 Спросить AI - Задать вопрос AI-ассистенту
         /status ID - Проверить статус заказа по ID
+        /ai - Отправить запрос к AI
         
         Для создания нового заказа нажмите кнопку "➕ Новый заказ" и следуйте инструкциям.
         Для проверки статуса введите команду /status с номером заказа.
-        Для общения с AI-ассистентом нажмите кнопку "🤖 Спросить AI" или используйте команду /ask.
         """
         
         # Создаем inline-кнопки действий
         keyboard = [
             [InlineKeyboardButton("📋 Просмотр очереди", callback_data=COMMAND_QUEUE)],
-            [InlineKeyboardButton("➕ Новый заказ", callback_data=COMMAND_NEW_ORDER)],
-            [InlineKeyboardButton("🤖 Спросить AI", callback_data=COMMAND_ASK_AI)]
+            [InlineKeyboardButton("➕ Новый заказ", callback_data=COMMAND_NEW_ORDER)]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         
@@ -597,30 +586,19 @@ class TelegramBot:
     async def echo(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Отвечает на обычные сообщения и обрабатывает текстовые кнопки"""
         text = update.message.text
-        chat_id = update.effective_chat.id
-        
-        # Проверяем, находится ли пользователь в режиме диалога с AI
-        # Если да, то передаем сообщение в обработчик диалога с AI
-        if 'state' in context.user_data and context.user_data['state'] in [WAIT_QUESTION, AI_CONVERSATION]:
-            logger.info(f"Передаю сообщение в режим диалога с AI: {text[:50]}...")
-            
-            if context.user_data['state'] == WAIT_QUESTION:
-                context.user_data['state'] = AI_CONVERSATION
-                return await self.process_ai_question(update, context)
-            else:  # AI_CONVERSATION
-                return await self.continue_ai_conversation(update, context)
         
         # Если пользователь в режиме ожидания ввода заказа
-        elif 'state' in context.user_data and context.user_data['state'] == WAIT_ORDER_TEXT:
-            return await self.process_order_text(update, context)
+        if 'state' in context.user_data:
+            if context.user_data['state'] == WAIT_ORDER_TEXT:
+                return await self.process_order_text(update, context)
+            elif context.user_data['state'] == WAIT_AI_DESCRIPTION:
+                return await self.process_ai_description(update, context)
         
         # Обработка текстовых кнопок меню
         elif text == "📋 Просмотр очереди":
             await self.cmd_queue(update, context)
         elif text == "➕ Новый заказ":
             await self.cmd_new_order(update, context)
-        elif text == "🤖 Спросить AI":
-            await self.cmd_ask_ai(update, context)
         elif text == "❓ Помощь":
             await self.cmd_help(update, context)
         else:
@@ -641,13 +619,11 @@ class TelegramBot:
             await self.cmd_new_order_callback(query, context)
         elif query.data == COMMAND_HELP:
             await self.cmd_help_callback(query, context)
-        elif query.data == COMMAND_ASK_AI:
-            await self.cmd_ask_ai_callback(query, context)
         elif query.data == "confirm":
             await self.confirm_order_callback(query, context)
         elif query.data == "cancel":
             await self.cancel_order_callback(query, context)
-            
+
     async def cmd_new_order_callback(self, query, context):
         """Обрабатывает нажатие кнопки создания нового заказа"""
         # Отправляем новое сообщение с запросом описания заказа
@@ -733,11 +709,11 @@ class TelegramBot:
             logger.error(f"Ошибка при получении очереди: {str(e)}")
             await query.edit_message_text(f"Произошла ошибка: {str(e)}")
 
+
     # Методы для работы с Claude AI
-    async def cmd_ask_ai(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Начинает диалог с Claude AI"""
+    async def cmd_start_ai_interaction(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Начинает процесс взаимодействия с Claude AI"""
         user = update.effective_user
-        chat_id = update.effective_chat.id
         
         # Проверяем, инициализирован ли клиент Claude API
         if not self.claude_client:
@@ -745,77 +721,36 @@ class TelegramBot:
                 "К сожалению, AI-ассистент сейчас недоступен. Попробуйте позже."
             )
             return ConversationHandler.END
-            
-        # Создаем кнопку для выхода из режима диалога с AI
-        keyboard = [
-            [InlineKeyboardButton("Выйти из режима диалога с AI", callback_data=COMMAND_EXIT_AI)]
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
         
-        # Инициализируем историю диалога для этого пользователя
-        if chat_id not in self.ai_conversations:
-            self.ai_conversations[chat_id] = {
-                'history': [],
-                'start_time': datetime.now().isoformat(),
-                'user_id': user.id,
-                'username': user.username or user.first_name
-            }
-            
-        # Отправляем приветственное сообщение
+        # Отправляем сообщение с инструкцией
         await update.message.reply_text(
-            "Вы вошли в режим диалога с AI-ассистентом. Задайте ваш вопрос о заказах, "
-            "очереди печати или работе типографии. Для выхода из режима диалога используйте /exit или кнопку ниже.",
-            reply_markup=reply_markup
+            "Я готов принять ваш запрос для AI-ассистента. Пожалуйста, опишите ваш вопрос или задачу."
         )
         
-        # Устанавливаем состояние пользователя в режим ожидания вопроса
-        context.user_data['state'] = WAIT_QUESTION
-        logger.info(f"Пользователь {user.username or user.first_name} (ID: {user.id}) вошел в режим диалога с AI")
+        # Устанавливаем состояние ожидания описания для AI
+        context.user_data['state'] = WAIT_AI_DESCRIPTION
+        logger.info(f"Пользователь {user.username or user.first_name} (ID: {user.id}) начал взаимодействие с AI")
         
-        return WAIT_QUESTION
-        
-    async def process_ai_question(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Обрабатывает вопрос пользователя к Claude AI"""
+        return WAIT_AI_DESCRIPTION
+    
+    async def process_ai_description(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Обрабатывает описание запроса к AI от пользователя"""
         user = update.effective_user
         chat_id = update.effective_chat.id
-        question = update.message.text.strip()
-        
-        # Формируем кнопку для выхода из режима диалога
-        keyboard = [
-            [InlineKeyboardButton("Выйти из режима диалога с AI", callback_data=COMMAND_EXIT_AI)]
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
+        description = update.message.text.strip()
         
         # Отправляем сообщение о начале обработки
-        processing_message = await update.message.reply_text("Обрабатываю ваш вопрос, пожалуйста, подождите...")
+        processing_message = await update.message.reply_text(
+            "Обрабатываю ваш запрос, пожалуйста, подождите... Это может занять некоторое время."
+        )
+        
+        # Устанавливаем состояние обработки запроса
+        context.user_data['state'] = PROCESSING_AI_REQUEST
+        context.user_data['processing_message_id'] = processing_message.message_id
         
         try:
-            # Сохраняем вопрос в истории диалога
-            if chat_id in self.ai_conversations:
-                self.ai_conversations[chat_id]['history'].append({'role': 'user', 'content': question})
-            else:
-                # Инициализируем историю, если её нет
-                self.ai_conversations[chat_id] = {
-                    'history': [{'role': 'user', 'content': question}],
-                    'start_time': datetime.now().isoformat(),
-                    'user_id': user.id,
-                    'username': user.username or user.first_name
-                }
-            
-            # Формируем полный текст промпта с учетом контекста и истории
-            full_prompt = self.ai_context
-            
-            # Добавляем историю диалога, если она есть
-            if len(self.ai_conversations[chat_id]['history']) > 0:
-                full_prompt += "\n\nИстория диалога:\n"
-                for message in self.ai_conversations[chat_id]['history']:
-                    if message['role'] == 'user':
-                        full_prompt += f"\nВопрос: {message['content']}"
-                    else:
-                        full_prompt += f"\nОтвет: {message['content']}"
-            
-            # Добавляем текущий вопрос
-            full_prompt += f"\n\nТекущий вопрос: {question}\n\nОтветь на текущий вопрос пользователя, используя свои знания о типографии и очереди печати."
+            # Формируем промпт для Claude
+            full_prompt = f"{self.ai_context}\n\nЗапрос пользователя: {description}"
             
             # Получаем ответ от Claude
             ai_response = self.claude_client.process_prompt(
@@ -824,9 +759,6 @@ class TelegramBot:
                 max_tokens=1000,
                 temperature=0.7
             )
-            
-            # Сохраняем ответ в истории
-            self.ai_conversations[chat_id]['history'].append({'role': 'assistant', 'content': ai_response})
             
             # Удаляем сообщение о обработке
             await context.bot.delete_message(
@@ -837,22 +769,22 @@ class TelegramBot:
             # Отправляем ответ
             await update.message.reply_text(
                 ai_response,
-                reply_markup=reply_markup,
                 parse_mode=ParseMode.HTML
             )
             
             # Логируем успешный ответ
-            logger.info(f"AI успешно ответил на вопрос пользователя {user.username or user.first_name} (ID: {user.id})")
+            logger.info(f"AI успешно ответил на запрос пользователя {user.username or user.first_name} (ID: {user.id})")
             
-            # Устанавливаем состояние пользователя в режим AI диалога
-            context.user_data['state'] = AI_CONVERSATION
+            # Сбрасываем состояние пользователя
+            if 'state' in context.user_data:
+                del context.user_data['state']
             
-            # Возвращаемся в режим диалога
-            return AI_CONVERSATION
+            # Завершаем разговор
+            return ConversationHandler.END
             
         except Exception as e:
             # В случае ошибки логируем её и отправляем сообщение об ошибке
-            logger.error(f"Ошибка при обработке вопроса к AI: {str(e)}")
+            logger.error(f"Ошибка при обработке запроса к AI: {str(e)}")
             
             # Удаляем сообщение о обработке
             await context.bot.delete_message(
@@ -861,118 +793,42 @@ class TelegramBot:
             )
             
             await update.message.reply_text(
-                "К сожалению, произошла ошибка при обработке вашего вопроса. "
-                "Пожалуйста, попробуйте еще раз или обратитесь к администратору.",
-                reply_markup=reply_markup
+                "К сожалению, произошла ошибка при обработке вашего запроса. "
+                "Пожалуйста, попробуйте еще раз или обратитесь к администратору."
             )
             
-            return AI_CONVERSATION
+            # Сбрасываем состояние пользователя
+            if 'state' in context.user_data:
+                del context.user_data['state']
             
-    async def continue_ai_conversation(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Продолжает диалог с Claude AI после первого вопроса"""
-        # Проверяем состояние пользователя
-        if 'state' not in context.user_data or context.user_data['state'] != AI_CONVERSATION:
-            context.user_data['state'] = AI_CONVERSATION
-            logger.info(f"Устанавливаю состояние AI_CONVERSATION для пользователя {update.effective_user.id}")
-            
-        # Просто повторяем процесс обработки вопроса
-        return await self.process_ai_question(update, context)
-        
-    async def exit_ai_conversation(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Завершает диалог с Claude AI по команде /exit"""
+            # Завершаем разговор
+            return ConversationHandler.END
+    
+    async def cancel_ai_request(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Отменяет запрос к AI"""
         user = update.effective_user
         chat_id = update.effective_chat.id
         
+        # Если есть сообщение о обработке, удаляем его
+        if 'processing_message_id' in context.user_data:
+            try:
+                await context.bot.delete_message(
+                    chat_id=chat_id,
+                    message_id=context.user_data['processing_message_id']
+                )
+            except Exception as e:
+                logger.error(f"Ошибка при удалении сообщения о обработке: {str(e)}")
+        
         # Сбрасываем состояние пользователя
         if 'state' in context.user_data:
             del context.user_data['state']
-            logger.info(f"Сброс состояния для пользователя {user.id} при выходе из диалога с AI")
-        
-        # Создаем клавиатуру основных действий
-        keyboard = [
-            [KeyboardButton("📋 Просмотр очереди"), KeyboardButton("➕ Новый заказ")],
-            [KeyboardButton("🤖 Спросить AI"), KeyboardButton("❓ Помощь")]
-        ]
-        reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
         
         await update.message.reply_text(
-            f"Диалог с AI-ассистентом завершен, {user.first_name}! "
-            "Вы можете вернуться к обычному режиму работы с ботом.",
-            reply_markup=reply_markup
+            f"Запрос к AI отменен, {user.first_name}."
         )
         
+        # Завершаем разговор
         return ConversationHandler.END
-        
-    async def exit_ai_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Завершает диалог с Claude AI по нажатию на кнопку"""
-        query = update.callback_query
-        user = query.from_user
-        chat_id = query.message.chat_id
-        
-        # Сбрасываем состояние пользователя
-        if 'state' in context.user_data:
-            del context.user_data['state']
-            logger.info(f"Сброс состояния для пользователя {user.id} при нажатии на кнопку выхода из AI")
-        
-        # Обязательно отправляем ответ, чтобы убрать часы загрузки
-        await query.answer()
-        
-        # Создаем клавиатуру основных действий
-        keyboard = [
-            [KeyboardButton("📋 Просмотр очереди"), KeyboardButton("➕ Новый заказ")],
-            [KeyboardButton("🤖 Спросить AI"), KeyboardButton("❓ Помощь")]
-        ]
-        reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-        
-        await query.message.reply_text(
-            f"Диалог с AI-ассистентом завершен, {user.first_name}! "
-            "Вы можете вернуться к обычному режиму работы с ботом.",
-            reply_markup=reply_markup
-        )
-        
-        return ConversationHandler.END
-        
-    async def cmd_ask_ai_callback(self, query, context):
-        """Обрабатывает нажатие кнопки для диалога с AI"""
-        user = query.from_user
-        chat_id = query.message.chat_id
-        
-        # Проверяем, инициализирован ли клиент Claude API
-        if not self.claude_client:
-            await query.edit_message_text(
-                "К сожалению, AI-ассистент сейчас недоступен. Попробуйте позже."
-            )
-            return
-            
-        # Создаем кнопку для выхода из режима диалога с AI
-        keyboard = [
-            [InlineKeyboardButton("Выйти из режима диалога с AI", callback_data=COMMAND_EXIT_AI)]
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        
-        # Инициализируем историю диалога для этого пользователя
-        if chat_id not in self.ai_conversations:
-            self.ai_conversations[chat_id] = {
-                'history': [],
-                'start_time': datetime.now().isoformat(),
-                'user_id': user.id,
-                'username': user.username or user.first_name
-            }
-            
-        # Отправляем приветственное сообщение
-        await query.edit_message_text(
-            "Вы вошли в режим диалога с AI-ассистентом. Задайте ваш вопрос о заказах, "
-            "очереди печати или работе типографии. Для выхода из режима диалога используйте /exit или кнопку ниже.",
-            reply_markup=reply_markup
-        )
-        
-        # Устанавливаем состояние ожидания вопроса
-        context.user_data['state'] = WAIT_QUESTION
-        logger.info(f"Пользователь {user.username or user.first_name} (ID: {user.id}) вошел в режим диалога с AI через кнопку")
-        
-        # Добавляем обработчик следующего сообщения как вопроса к AI
-        return WAIT_QUESTION
-
 
 def main():
     """Основная функция для запуска бота"""
