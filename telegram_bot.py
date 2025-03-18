@@ -198,17 +198,7 @@ class TelegramBot:
         self.application.add_handler(order_conv_handler)
         
         # Обработчик для взаимодействия с AI
-        ai_conv_handler = ConversationHandler(
-            entry_points=[
-                CommandHandler("ai", self.cmd_start_ai_interaction)
-            ],
-            states={
-                WAIT_AI_DESCRIPTION: [MessageHandler(filters.TEXT & ~filters.COMMAND, self.process_ai_description)],
-                PROCESSING_AI_REQUEST: [CommandHandler("cancel", self.cancel_ai_request)]
-            },
-            fallbacks=[CommandHandler("cancel", self.cancel_ai_request)]
-        )
-        self.application.add_handler(ai_conv_handler)
+        # Удалён обработчик команды /ai
         
         # Обработчик для кнопок
         self.application.add_handler(CallbackQueryHandler(self.button_callback))
@@ -296,10 +286,6 @@ class TelegramBot:
         📋 Просмотр очереди - Показать текущую очередь печати
         ➕ Новый заказ - Создать новый заказ
         /status ID - Проверить статус заказа по ID
-        /ai - Отправить запрос к AI
-        
-        Для создания нового заказа нажмите кнопку "➕ Новый заказ" и следуйте инструкциям.
-        Для проверки статуса введите команду /status с номером заказа.
         """
         
         # Создаем inline-кнопки действий
@@ -711,124 +697,22 @@ class TelegramBot:
 
 
     # Методы для работы с Claude AI
-    async def cmd_start_ai_interaction(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Начинает процесс взаимодействия с Claude AI"""
-        user = update.effective_user
-        
-        # Проверяем, инициализирован ли клиент Claude API
-        if not self.claude_client:
-            await update.message.reply_text(
-                "К сожалению, AI-ассистент сейчас недоступен. Попробуйте позже."
-            )
-            return ConversationHandler.END
-        
-        # Отправляем сообщение с инструкцией
-        await update.message.reply_text(
-            "Я готов принять ваш запрос для AI-ассистента. Пожалуйста, опишите ваш вопрос или задачу."
-        )
-        
-        # Устанавливаем состояние ожидания описания для AI
-        context.user_data['state'] = WAIT_AI_DESCRIPTION
-        logger.info(f"Пользователь {user.username or user.first_name} (ID: {user.id}) начал взаимодействие с AI")
-        
-        return WAIT_AI_DESCRIPTION
-    
-    async def process_ai_description(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Обрабатывает описание запроса к AI от пользователя"""
-        user = update.effective_user
-        chat_id = update.effective_chat.id
-        description = update.message.text.strip()
-        
-        # Отправляем сообщение о начале обработки
-        processing_message = await update.message.reply_text(
-            "Обрабатываю ваш запрос, пожалуйста, подождите... Это может занять некоторое время."
-        )
-        
-        # Устанавливаем состояние обработки запроса
-        context.user_data['state'] = PROCESSING_AI_REQUEST
-        context.user_data['processing_message_id'] = processing_message.message_id
-        
-        try:
-            # Формируем промпт для Claude
-            full_prompt = f"{self.ai_context}\n\nЗапрос пользователя: {description}"
-            
-            # Получаем ответ от Claude
-            ai_response = self.claude_client.process_prompt(
-                prompt=full_prompt,
-                model="claude-3-haiku-20240307",
-                max_tokens=1000,
-                temperature=0.7
-            )
-            
-            # Удаляем сообщение о обработке
-            await context.bot.delete_message(
-                chat_id=chat_id,
-                message_id=processing_message.message_id
-            )
-            
-            # Отправляем ответ
-            await update.message.reply_text(
-                ai_response,
-                parse_mode=ParseMode.HTML
-            )
-            
-            # Логируем успешный ответ
-            logger.info(f"AI успешно ответил на запрос пользователя {user.username or user.first_name} (ID: {user.id})")
-            
-            # Сбрасываем состояние пользователя
-            if 'state' in context.user_data:
-                del context.user_data['state']
-            
-            # Завершаем разговор
-            return ConversationHandler.END
-            
-        except Exception as e:
-            # В случае ошибки логируем её и отправляем сообщение об ошибке
-            logger.error(f"Ошибка при обработке запроса к AI: {str(e)}")
-            
-            # Удаляем сообщение о обработке
-            await context.bot.delete_message(
-                chat_id=chat_id,
-                message_id=processing_message.message_id
-            )
-            
-            await update.message.reply_text(
-                "К сожалению, произошла ошибка при обработке вашего запроса. "
-                "Пожалуйста, попробуйте еще раз или обратитесь к администратору."
-            )
-            
-            # Сбрасываем состояние пользователя
-            if 'state' in context.user_data:
-                del context.user_data['state']
-            
-            # Завершаем разговор
-            return ConversationHandler.END
-    
-    async def cancel_ai_request(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Отменяет запрос к AI"""
-        user = update.effective_user
-        chat_id = update.effective_chat.id
-        
-        # Если есть сообщение о обработке, удаляем его
-        if 'processing_message_id' in context.user_data:
-            try:
-                await context.bot.delete_message(
-                    chat_id=chat_id,
-                    message_id=context.user_data['processing_message_id']
-                )
-            except Exception as e:
-                logger.error(f"Ошибка при удалении сообщения о обработке: {str(e)}")
-        
-        # Сбрасываем состояние пользователя
-        if 'state' in context.user_data:
-            del context.user_data['state']
-        
-        await update.message.reply_text(
-            f"Запрос к AI отменен, {user.first_name}."
-        )
-        
-        # Завершаем разговор
-        return ConversationHandler.END
+    # Удалён обработчик команды /ai
+
+    def process_order_description(self, text):
+        """Структурирует описание заказа с помощью Claude API"""
+        prompt = f"""Преобразуй описание заказа в JSON-формат:
+        {{
+            "client": str,
+            "phone": str,
+            "material": str,
+            "date": DD.MM.YY,
+            "print_type": str,
+            "quantity": int
+        }}
+        Текст: {text}"""
+        return claude_api.query(prompt)
+
 
 def main():
     """Основная функция для запуска бота"""
