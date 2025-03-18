@@ -3,15 +3,17 @@
 Выполняет анализ приоритетов, сроков и других параметров для оптимальной очередности.
 """
 
-import os
-import logging
-import json
-import yaml
-import pandas as pd
 import datetime
-from typing import Dict, List, Any, Optional, Union
+import logging
+import os
+import json
+from typing import Dict, List, Any, Optional
+
+import pandas as pd
+import yaml
 
 # Настройка логирования
+os.makedirs("logs", exist_ok=True)
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -412,8 +414,25 @@ class QueueManager:
         Returns:
             List[Dict[str, Any]]: Список заказов в очереди.
         """
-        # Здесь должна быть логика загрузки очереди из файла или базы данных
-        # Пока вернем пустой список для простоты
+        # Получаем путь к локальному файлу с очередью
+        local_folder = self.config.get('files', {}).get('local_data_folder', 'data/')
+        queue_file = os.path.join(local_folder, 'queue.json')
+        
+        # Проверяем существование папки и создаем при необходимости
+        os.makedirs(local_folder, exist_ok=True)
+        
+        # Если файл с очередью существует, загружаем данные
+        if os.path.exists(queue_file):
+            try:
+                with open(queue_file, 'r', encoding='utf-8') as f:
+                    queue = json.load(f)
+                logger.info(f"Загружена очередь из {queue_file}, {len(queue)} заказов")
+                return queue
+            except Exception as e:
+                logger.error(f"Ошибка при загрузке очереди из {queue_file}: {str(e)}")
+        
+        # Если файл не существует или произошла ошибка, возвращаем пустой список
+        logger.info(f"Файл очереди не найден или поврежден, создаем новую очередь")
         return []
     
     def save_queue(self, queue: List[Dict[str, Any]]) -> bool:
@@ -426,10 +445,32 @@ class QueueManager:
         Returns:
             bool: True в случае успеха, False в случае ошибки.
         """
-        # Здесь должна быть логика сохранения очереди в файл или базу данных
-        # Пока просто логируем действие
-        logger.info(f"Сохранение очереди с {len(queue)} заказами")
-        return True
+        # Получаем путь к локальному файлу с очередью
+        local_folder = self.config.get('files', {}).get('local_data_folder', 'data/')
+        queue_file = os.path.join(local_folder, 'queue.json')
+        
+        # Проверяем существование папки и создаем при необходимости
+        os.makedirs(local_folder, exist_ok=True)
+        
+        try:
+            # Сохраняем очередь в JSON формате
+            with open(queue_file, 'w', encoding='utf-8') as f:
+                json.dump(queue, f, ensure_ascii=False, indent=2)
+            logger.info(f"Очередь из {len(queue)} заказов сохранена в {queue_file}")
+            
+            # Дополнительно сохраняем в Excel формате для удобства просмотра
+            excel_file = os.path.join(local_folder, 'queue.xlsx')
+            try:
+                df = self.queue_to_dataframe(queue)
+                df.to_excel(excel_file, index=False)
+                logger.info(f"Очередь сохранена в Excel формате: {excel_file}")
+            except Exception as e:
+                logger.warning(f"Не удалось сохранить очередь в Excel: {str(e)}")
+            
+            return True
+        except Exception as e:
+            logger.error(f"Ошибка при сохранении очереди в {queue_file}: {str(e)}")
+            return False
     
     def get_order_by_id(self, order_id: str) -> Optional[Dict[str, Any]]:
         """

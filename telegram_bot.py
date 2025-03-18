@@ -13,9 +13,14 @@ from datetime import datetime
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, ReplyKeyboardRemove, KeyboardButton
 from telegram.constants import ParseMode
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, ConversationHandler, CallbackQueryHandler
+import yaml
 
 # Импортируем клиент Claude API для работы с AI
 from claude_api import ClaudeAPIClient
+
+# Импортируем наши модули
+from queue_formation import QueueManager
+from data_processing import OrderProcessor
 
 # Настройка логирования
 logging.basicConfig(
@@ -720,19 +725,24 @@ class TelegramBot:
 
 def main():
     """Основная функция для запуска бота"""
-    # Получаем токен из переменной окружения или конфигурационного файла
-    token = os.environ.get("TELEGRAM_BOT_TOKEN")
+    # Загрузка конфигурации
+    config_path = "config.yaml"
+    with open(config_path, 'r', encoding='utf-8') as file:
+        config = yaml.safe_load(file)
     
-    if not token:
-        logger.error("TELEGRAM_BOT_TOKEN не найден. Укажите токен в переменных окружения.")
-        return
-        
-    # Здесь должно быть создание и инициализация других компонентов системы
-    # data_processor = DataProcessor()
-    # queue_manager = QueueManager()
+    # Создаем папки для данных и логов если они не существуют
+    os.makedirs("data", exist_ok=True)
+    os.makedirs("logs", exist_ok=True)
     
-    # Создаем и запускаем бота
-    bot = TelegramBot(token)  # , data_processor=data_processor, queue_manager=queue_manager
+    # Инициализация компонентов
+    queue_manager = QueueManager(config_path)
+    data_processor = OrderProcessor(config_path="config.yaml")
+    token = os.environ.get("TELEGRAM_BOT_TOKEN") or config.get("telegram", {}).get("token", "")
+    
+    # Создание бота с подключением менеджера очереди
+    bot = TelegramBot(token, data_processor=data_processor, queue_manager=queue_manager)
+    
+    # Запуск бота
     bot.start()
 
 
