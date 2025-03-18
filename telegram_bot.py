@@ -206,8 +206,8 @@ class TelegramBot:
         # Обработчик неизвестных команд
         self.application.add_handler(MessageHandler(filters.COMMAND, self.unknown_command))
         
-        # Удалён обработчик любых других сообщений - теперь бот обрабатывает произвольный текст
-        # в рамках создания заказа через ConversationHandler
+        # Обработчик для текстовых кнопок меню
+        self.application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.echo))
 
     async def clean_bot_state(self):
         """Очищает состояние бота перед запуском, удаляя все webhook'и и pending updates.
@@ -569,6 +569,25 @@ class TelegramBot:
             "Неизвестная команда. Используйте /help для получения списка доступных команд."
         )
     
+    async def echo(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Обрабатывает текстовые кнопки меню"""
+        text = update.message.text
+        
+        # Если пользователь в режиме ожидания ввода заказа
+        if 'state' in context.user_data:
+            if context.user_data['state'] == WAIT_ORDER_TEXT:
+                return await self.process_order_text(update, context)
+            elif context.user_data['state'] == WAIT_AI_DESCRIPTION:
+                return await self.process_ai_description(update, context)
+        
+        # Обработка текстовых кнопок меню
+        elif text == "📋 Просмотр очереди":
+            await self.cmd_queue(update, context)
+        elif text == "➕ Новый заказ":
+            await self.cmd_new_order(update, context)
+        elif text == "❓ Помощь":
+            await self.cmd_help(update, context)
+            
     async def button_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Обрабатывает нажатия на inline-кнопки"""
         query = update.callback_query
