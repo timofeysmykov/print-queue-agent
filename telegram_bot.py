@@ -404,9 +404,7 @@ class TelegramBot:
         context.user_data['state'] = WAIT_ORDER_TEXT
         
         await update.message.reply_text(
-            "Пожалуйста, отправьте описание заказа в свободной форме. "
-            "Включите информацию о клиенте, контактных данных, типе печати, "
-            "сроках и любых особых требованиях."
+            "Введите информацию о заказе:"
         )
         return WAIT_ORDER_TEXT
     
@@ -749,9 +747,7 @@ class TelegramBot:
         context.user_data['state'] = WAIT_ORDER_TEXT
         
         await query.edit_message_text(
-            "Пожалуйста, отправьте описание заказа в свободной форме. "
-            "Включите информацию о клиенте, контактных данных, типе печати, "
-            "сроках и любых особых требованиях."
+            "Введите информацию о заказе:"
         )
         return WAIT_ORDER_TEXT
     
