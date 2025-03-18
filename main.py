@@ -364,7 +364,7 @@ class PrintQueueAgent:
         
         while self.should_run:
             try:
-                # Проверка обновлений в Google Drive
+                # Проверка обновлений в основных файлах
                 changed_files = self.gdrive.watch_folder()
                 
                 if changed_files:
@@ -382,6 +382,9 @@ class PrintQueueAgent:
                     else:
                         logger.info("Изменения не касаются файла заказов")
                 
+                # Проверяем новые текстовые заказы
+                self.check_new_order_files()
+                
                 # Ожидание до следующей проверки
                 sleep_interval = self.check_interval_minutes * 60
                 for _ in range(sleep_interval):
@@ -392,6 +395,83 @@ class PrintQueueAgent:
             except Exception as e:
                 logger.error(f"Ошибка при мониторинге файлов: {str(e)}")
                 time.sleep(60)  # Пауза перед повторной попыткой
+    
+    def check_new_order_files(self) -> None:
+        """
+        Проверяет наличие новых текстовых файлов с заказами в специальной папке Google Drive,
+        обрабатывает их и добавляет в очередь печати.
+        """
+        try:
+            # Получаем список текстовых файлов с новыми заказами
+            order_files = self.gdrive.watch_for_txt_files()
+            
+            if not order_files:
+                logger.debug("Новых текстовых файлов с заказами не обнаружено")
+                return
+                
+            logger.info(f"Обнаружено {len(order_files)} новых текстовых файлов с заказами")
+            
+            processed_orders = []
+            
+            # Обрабатываем каждый файл
+            for file_info in order_files:
+                file_name = file_info['name']
+                file_id = file_info['id']
+                
+                logger.info(f"Обработка файла заказа: {file_name}")
+                
+                # Получаем содержимое файла
+                file_content = self.gdrive.get_file_content_as_string(file_name)
+                
+                if not file_content:
+                    logger.error(f"Не удалось прочитать содержимое файла {file_name}")
+                    continue
+                
+                # Обрабатываем текст заказа
+                order_data = self.process_order_text(file_content)
+                
+                if "error" in order_data:
+                    logger.error(f"Ошибка при обработке заказа из файла {file_name}: {order_data['error']}")
+                    continue
+                
+                # Устанавливаем источник заказа
+                order_data['source'] = 'gdrive_txt'
+                
+                # Добавляем в список обработанных заказов
+                processed_orders.append(order_data)
+                
+                # Удаляем обработанный файл
+                self.gdrive.delete_file(file_name)
+                logger.info(f"Файл {file_name} успешно обработан и удален")
+            
+            if processed_orders:
+                # Скачиваем файл очереди
+                files = self.download_files_from_gdrive()
+                
+                if not files or "queue" not in files:
+                    logger.error("Не удалось получить файл очереди печати")
+                    return
+                
+                # Обновляем очередь печати
+                queue_result = self.update_queue(processed_orders, files["queue"])
+                
+                if queue_result["status"] == "error":
+                    logger.error(f"Ошибка при обновлении очереди: {queue_result.get('error')}")
+                    return
+                
+                # Загружаем обновленный файл очереди обратно в Google Drive
+                upload_success = self.upload_files_to_gdrive({
+                    "queue": queue_result["queue_file"]
+                })
+                
+                # Генерируем и отправляем уведомление
+                if upload_success:
+                    queue_summary = self.generate_queue_summary(processed_orders)
+                    self.send_notifications(queue_summary, processed_orders)
+                    logger.info(f"Очередь успешно обновлена с {len(processed_orders)} новыми заказами")
+                
+        except Exception as e:
+            logger.error(f"Ошибка при проверке новых файлов заказов: {str(e)}")
     
     def run_queue_processing(self) -> Dict[str, Any]:
         """

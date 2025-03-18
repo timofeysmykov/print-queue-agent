@@ -405,20 +405,59 @@ class GoogleDriveIntegration:
             
             downloader = MediaIoBaseDownload(file_content, request)
             done = False
-            while not done:
-                status, done = downloader.next_chunk()
-            
+            while done is False:
+                _, done = downloader.next_chunk()
+                
             file_content.seek(0)
             content = file_content.read().decode('utf-8')
             
-            logger.info(f"Содержимое файла {file_name} успешно прочитано")
+            logger.info(f"Файл {file_name} успешно прочитан")
             return content
             
         except Exception as e:
-            logger.error(f"Ошибка при чтении содержимого файла {file_name}: {str(e)}")
+            logger.error(f"Ошибка при чтении файла {file_name}: {str(e)}")
             return None
-
-
+            
+    def watch_for_txt_files(self, orders_folder_name="Новые заказы"):
+        """
+        Проверяет наличие новых текстовых файлов в указанной папке.
+        
+        Args:
+            orders_folder_name (str): Имя папки с новыми заказами
+            
+        Returns:
+            list: Список новых текстовых файлов.
+        """
+        try:
+            # Найдем папку с заказами
+            folder_info = self.find_file_by_name(orders_folder_name)
+            if not folder_info:
+                logger.warning(f"Папка {orders_folder_name} не найдена в Google Drive")
+                return []
+                
+            folder_id = folder_info['id']
+            
+            # Получаем список текстовых файлов
+            query = f"'{folder_id}' in parents and (mimeType='text/plain' or name contains '.txt' or name contains '.md')"
+            
+            response = self.drive_service.files().list(
+                q=query,
+                spaces='drive',
+                fields="files(id, name, mimeType, modifiedTime)",
+                pageSize=100
+            ).execute()
+            
+            files = response.get('files', [])
+            
+            if files:
+                logger.info(f"Найдено {len(files)} текстовых файлов в папке {orders_folder_name}")
+            
+            return files
+                
+        except Exception as e:
+            logger.error(f"Ошибка при поиске текстовых файлов: {str(e)}")
+            return []
+    
 if __name__ == "__main__":
     # Пример использования
     try:
