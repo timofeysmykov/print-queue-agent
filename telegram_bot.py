@@ -188,7 +188,7 @@ class TelegramBot:
         order_conv_handler = ConversationHandler(
             entry_points=[
                 CommandHandler("new_order", self.cmd_new_order),
-                CallbackQueryHandler(self.button_callback, pattern=f"^{COMMAND_NEW_ORDER}$")
+                CallbackQueryHandler(self.cmd_new_order_callback, pattern=f"^{COMMAND_NEW_ORDER}$")
             ],
             states={
                 WAIT_ORDER_TEXT: [MessageHandler(filters.TEXT & ~filters.COMMAND, self.process_order_text)],
@@ -203,17 +203,15 @@ class TelegramBot:
         )
         self.application.add_handler(order_conv_handler)
         
-        # Обработчик для взаимодействия с AI
-        # Удалён обработчик команды /ai
-        
-        # Обработчик для кнопок
-        self.application.add_handler(CallbackQueryHandler(self.button_callback))
+        # Обработчик для кнопок (неотносящихся к состояниям)
+        self.application.add_handler(CallbackQueryHandler(self.button_callback, pattern=f"^{COMMAND_QUEUE}$"))
+        self.application.add_handler(CallbackQueryHandler(self.button_callback, pattern=f"^{COMMAND_HELP}$"))
         
         # Обработчик неизвестных команд
         self.application.add_handler(MessageHandler(filters.COMMAND, self.unknown_command))
         
-        # Обработчик для текстовых кнопок меню
-        self.application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.echo))
+        # Обработчик текстовых кнопок и простых сообщений
+        self.application.add_handler(MessageHandler(filters.TEXT, self.echo))
 
     async def clean_bot_state(self):
         """Очищает состояние бота перед запуском, удаляя все webhook'и и pending updates.
@@ -417,13 +415,23 @@ class TelegramBot:
         order_text = update.message.text
         context.user_data['order_text'] = order_text
         
+        # Получаем chat_id для идентификации пользователя
+        chat_id = update.effective_chat.id
+        
         await update.message.reply_text("Обрабатываю информацию о заказе...")
         
         try:
             if self.data_processor:
                 # Используем LLM (Claude) для извлечения структурированных данных
                 order_data = self.data_processor.extract_order_from_text(order_text)
+                # Сохраняем данные заказа в контексте пользователя
                 context.user_data['order_data'] = order_data
+                
+                # Дополнительно сохраняем данные в глобальном хранилище по ID чата
+                if not hasattr(self, 'order_data_storage'):
+                    self.order_data_storage = {}
+                self.order_data_storage[chat_id] = order_data
+                logger.info(f"Сохранены данные заказа для чата {chat_id}: {order_data}")
                 
                 # Формируем сообщение с извлеченной информацией
                 message = "<b>Извлеченная информация о заказе:</b>\n\n"
@@ -539,9 +547,21 @@ class TelegramBot:
     
     async def confirm_order_callback(self, query, context):
         """Подтверждает создание заказа (для кнопок)"""
+        # Получаем chat_id для идентификации пользователя
+        chat_id = query.message.chat_id
+        
+        # Пытаемся получить данные заказа из контекста пользователя
         order_data = context.user_data.get('order_data')
         
+        # Если данных нет в контексте, пробуем получить из глобального хранилища
+        if not order_data and hasattr(self, 'order_data_storage') and chat_id in self.order_data_storage:
+            order_data = self.order_data_storage[chat_id]
+            logger.info(f"Получены данные заказа из глобального хранилища для чата {chat_id}")
+            # Для дальнейшего использования сохраняем данные в контексте пользователя
+            context.user_data['order_data'] = order_data
+        
         if not order_data:
+            logger.error(f"Информация о заказе отсутствует для чата {chat_id}. Context: {context.user_data}")
             await query.edit_message_text("Информация о заказе отсутствует. Пожалуйста, начните заново.")
             return ConversationHandler.END
             
@@ -661,6 +681,10 @@ class TelegramBot:
         query = update.callback_query
         # Обязательно отправляем ответ, чтобы убрать часы загрузки
         await query.answer()
+        
+        # Выводим дополнительную информацию для отладки при наличии кнопки confirm
+        if query.data == "confirm":
+            logger.info(f"Нажата кнопка подтверждения. User data: {context.user_data}")
         
         # Обрабатываем разные типы кнопок
         if query.data == COMMAND_QUEUE:
