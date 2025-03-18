@@ -80,7 +80,8 @@ class PrintQueueAgent:
             self.notifier = TelegramNotifier(self.telegram_token, self.admin_chat_ids)
             self.telegram_bot = TelegramBot(
                 self.telegram_token,
-                self
+                data_processor=self,
+                queue_manager=self
             )
         else:
             logger.warning("Не указан токен Telegram-бота. Уведомления через Telegram недоступны.")
