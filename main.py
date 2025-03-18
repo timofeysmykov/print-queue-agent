@@ -305,69 +305,54 @@ class PrintQueueAgent:
             logger.error(f"Ошибка при генерации отчета: {str(e)}")
             return f"Не удалось сгенерировать отчет: {str(e)}"
     
-    def process_order_text(self, order_text: str) -> Dict[str, Any]:
+    def process_order_text(self, text: str) -> Dict[str, Any]:
         """
-        Обработка текстового описания заказа с использованием Claude 3.5 Haiku.
+        Обработка текстового описания заказа с использованием Claude API.
         
         Args:
-            order_text (str): Текстовое описание заказа.
+            text (str): Текстовое описание заказа.
             
         Returns:
             Dict[str, Any]: Структурированные данные заказа.
         """
+        logger.info(f"Обработка текста заказа: {text[:50]}...")
+        
         try:
-            # Обработка текста заказа через Claude
-            order_data = self.claude_client.process_order_text(order_text)
+            # Используем Claude API для обработки текста заказа
+            order_data = self.claude_client.process_order_text(text)
             
             if "error" in order_data:
-                logger.error(f"Ошибка при обработке текста заказа: {order_data['error']}")
-                return {"error": "Не удалось обработать текст заказа"}
+                logger.error(f"Ошибка при обработке заказа: {order_data['error']}")
+                return order_data
             
-            logger.info("Текст заказа успешно обработан")
+            # Добавляем статус "Новый" и источник для заказов
+            order_data['status'] = 'Новый'
+            order_data['source'] = 'telegram'
+            
+            # Генерация уникального ID заказа, если он не указан
+            if 'id' not in order_data:
+                timestamp = datetime.now().strftime('%Y%m%d%H%M%S')
+                order_data['id'] = f"TG{timestamp}"
+            
+            logger.info(f"Заказ успешно обработан: ID={order_data.get('id', 'н/д')}")
             return order_data
+            
         except Exception as e:
-            logger.error(f"Ошибка при обработке текста заказа: {str(e)}")
-            return {"error": f"Ошибка при обработке: {str(e)}"}
+            logger.error(f"Ошибка при обработке заказа: {str(e)}")
+            return {"error": f"Ошибка при обработке заказа: {str(e)}"}
     
-    def send_notifications(self, summary: str, queue_data: List[Dict[str, Any]]) -> bool:
+    def extract_order_from_text(self, text: str) -> Dict[str, Any]:
         """
-        Отправка уведомлений пользователям через Telegram.
+        Извлекает данные заказа из неструктурированного текста.
+        Метод-адаптер для совместимости с TelegramBot.
         
         Args:
-            summary (str): Текстовая сводка для отправки.
-            queue_data (List[Dict[str, Any]]): Данные очереди печати.
+            text (str): Неструктурированный текст заказа.
             
         Returns:
-            bool: True если уведомления успешно отправлены, иначе False.
+            Dict[str, Any]: Структурированные данные заказа.
         """
-        try:
-            # Проверка доступности Telegram-уведомлений
-            if not hasattr(self, 'notifier') or not self.notifier:
-                logger.warning("Telegram-уведомления недоступны")
-                return False
-                
-            # Отправка общей сводки всем администраторам
-            self.notifier.send_notification(
-                f"<b>Обновление очереди печати</b>\n\n{summary}"
-            )
-            
-            # Отправка срочных уведомлений для высокоприоритетных заказов
-            high_priority_count = 0
-            for order in queue_data:
-                priority = order.get("priority", "").lower()
-                if priority == "высокий":
-                    high_priority_msg = f"⚠️ <b>Срочный заказ:</b> {order.get('description', 'Нет описания')}\n"
-                    high_priority_msg += f"Заказчик: {order.get('customer', 'Не указан')}\n"
-                    high_priority_msg += f"Срок: {order.get('deadline', 'Не указан')}"
-                    
-                    self.notifier.send_notification(high_priority_msg)
-                    high_priority_count += 1
-            
-            logger.info(f"Уведомления успешно отправлены (включая {high_priority_count} срочных)")
-            return True
-        except Exception as e:
-            logger.error(f"Ошибка при отправке уведомлений: {str(e)}")
-            return False
+        return self.process_order_text(text)
     
     def monitor_file_changes(self) -> None:
         """
