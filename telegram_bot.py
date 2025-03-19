@@ -193,8 +193,6 @@ class TelegramBot:
             states={
                 WAIT_ORDER_TEXT: [MessageHandler(filters.TEXT & ~filters.COMMAND, self.process_order_text)],
                 WAIT_CONFIRM: [
-                    MessageHandler(filters.Regex('^(Да|да)$'), self.confirm_order),
-                    MessageHandler(filters.Regex('^(Нет|нет)$'), self.cancel_order),
                     CallbackQueryHandler(self.confirm_order_callback, pattern='^confirm$'),
                     CallbackQueryHandler(self.cancel_order_callback, pattern='^cancel$'),
                 ]
@@ -204,8 +202,7 @@ class TelegramBot:
         self.application.add_handler(order_conv_handler)
         
         # Обработчик для кнопок (неотносящихся к состояниям)
-        self.application.add_handler(CallbackQueryHandler(self.button_callback, pattern=f"^{COMMAND_QUEUE}$"))
-        self.application.add_handler(CallbackQueryHandler(self.button_callback, pattern=f"^{COMMAND_HELP}$"))
+        self.application.add_handler(CallbackQueryHandler(self.button_callback))
         
         # Обработчик неизвестных команд
         self.application.add_handler(MessageHandler(filters.COMMAND, self.unknown_command))
@@ -410,7 +407,22 @@ class TelegramBot:
     
     async def process_order_text(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Обрабатывает текст заказа от пользователя"""
+        # Проверяем, что мы действительно ожидаем текст заказа
+        if 'state' not in context.user_data or context.user_data['state'] != WAIT_ORDER_TEXT:
+            # Если мы попали сюда не в нужном состоянии, игнорируем
+            return ConversationHandler.END
+            
         order_text = update.message.text
+        
+        # Проверяем, что текст не является командой меню
+        menu_commands = ["📋 Просмотр очереди", "➕ Новый заказ", "❓ Помощь"]
+        if order_text in menu_commands:
+            await update.message.reply_text(
+                "Кажется, вы выбрали команду меню вместо ввода информации о заказе. "
+                "Пожалуйста, введите текст заказа или выберите /cancel для отмены."
+            )
+            return WAIT_ORDER_TEXT
+            
         context.user_data['order_text'] = order_text
         
         # Получаем chat_id для идентификации пользователя
@@ -546,43 +558,43 @@ class TelegramBot:
     
     async def confirm_order_callback(self, query, context):
         """Подтверждает создание заказа (для кнопок)"""
-        # Получаем chat_id для идентификации пользователя
-        chat_id = query.message.chat_id
-        
-        # Пытаемся получить данные заказа из контекста пользователя
-        order_data = context.user_data.get('order_data')
-        
-        # Если данных нет в контексте, пробуем получить из глобального хранилища
-        if not order_data and hasattr(self, 'order_data_storage') and chat_id in self.order_data_storage:
-            order_data = self.order_data_storage[chat_id]
-            logger.info(f"Получены данные заказа из глобального хранилища для чата {chat_id}")
-            # Для дальнейшего использования сохраняем данные в контексте пользователя
-            context.user_data['order_data'] = order_data
-        
-        if not order_data:
-            logger.error(f"Информация о заказе отсутствует для чата {chat_id}. Context: {context.user_data}")
-            await query.edit_message_text("Информация о заказе отсутствует. Пожалуйста, начните заново.")
-            return ConversationHandler.END
-            
         try:
-            if self.queue_manager:
-                # Сообщаем о начале процесса добавления заказа
+            # Получаем chat_id для идентификации пользователя
+            chat_id = query.message.chat_id
+            
+            # Пытаемся получить данные заказа из контекста пользователя
+            order_data = context.user_data.get('order_data')
+            
+            # Если данных нет в контексте, пробуем получить из глобального хранилища
+            if not order_data and hasattr(self, 'order_data_storage') and chat_id in self.order_data_storage:
+                order_data = self.order_data_storage[chat_id]
+                logger.info(f"Получены данные заказа из глобального хранилища для чата {chat_id}")
+                # Для дальнейшего использования сохраняем данные в контексте пользователя
+                context.user_data['order_data'] = order_data
+            
+            # Проверяем наличие данных заказа
+            if not order_data:
+                logger.error(f"Не найдены данные заказа для чата {chat_id}")
                 await query.edit_message_text(
-                    "⏳ Начинаю создание заказа...\n"
-                    "Пожалуйста, подождите, операция может занять некоторое время."
+                    "Ошибка: данные заказа не найдены. Пожалуйста, начните процесс создания заказа заново.",
+                    reply_markup=None
                 )
-                
-                # Шаг 1: Поиск файла очереди на Google Drive
+                # Очищаем данные пользователя
+                context.user_data.clear()
+                return ConversationHandler.END
+            
+            if self.queue_manager:
+                # Шаг 1: Начало процесса
                 await query.edit_message_text(
                     "⏳ Начинаю создание заказа...\n"
-                    "🔍 Ищу файл очереди на Google Drive..."
+                    "🔍 Проверяю доступность Google Drive..."
                 )
                 await asyncio.sleep(1)  # Небольшая задержка для лучшего UX
                 
                 # Шаг 2: Скачивание файла очереди
                 await query.edit_message_text(
                     "⏳ Начинаю создание заказа...\n"
-                    "✅ Файл очереди найден на Google Drive\n"
+                    "✅ Google Drive доступен\n"
                     "📥 Скачиваю файл очереди в Excel формате..."
                 )
                 await asyncio.sleep(1)  # Небольшая задержка для лучшего UX
@@ -590,7 +602,7 @@ class TelegramBot:
                 # Шаг 3: Загрузка существующей очереди из файла
                 await query.edit_message_text(
                     "⏳ Начинаю создание заказа...\n"
-                    "✅ Файл очереди найден на Google Drive\n"
+                    "✅ Google Drive доступен\n"
                     "✅ Файл очереди скачан\n"
                     "📊 Загружаю данные из файла Excel..."
                 )
@@ -602,7 +614,7 @@ class TelegramBot:
                 # Шаг 4: Обновление очереди
                 await query.edit_message_text(
                     "⏳ Добавляю заказ в очередь...\n"
-                    "✅ Файл очереди найден на Google Drive\n"
+                    "✅ Google Drive доступен\n"
                     "✅ Файл очереди скачан\n"
                     "✅ Данные успешно загружены из Excel\n"
                     "📝 Добавляю новый заказ в очередь..."
@@ -612,7 +624,7 @@ class TelegramBot:
                 # Шаг 5: Сохранение обновленной очереди
                 await query.edit_message_text(
                     "⏳ Добавляю заказ в очередь...\n"
-                    "✅ Файл очереди найден на Google Drive\n"
+                    "✅ Google Drive доступен\n"
                     "✅ Файл очереди скачан\n"
                     "✅ Данные успешно загружены из Excel\n"
                     "✅ Заказ добавлен в очередь\n"
@@ -623,7 +635,7 @@ class TelegramBot:
                 # Шаг 6: Выгрузка обновленного файла на Google Drive
                 await query.edit_message_text(
                     "⏳ Завершаю создание заказа...\n"
-                    "✅ Файл очереди найден на Google Drive\n"
+                    "✅ Google Drive доступен\n"
                     "✅ Файл очереди скачан\n"
                     "✅ Данные успешно загружены из Excel\n"
                     "✅ Заказ добавлен в очередь\n"
@@ -703,10 +715,18 @@ class TelegramBot:
         
         # Если пользователь в режиме ожидания ввода заказа
         if 'state' in context.user_data:
-            if context.user_data['state'] == WAIT_ORDER_TEXT:
+            state = context.user_data['state']
+            if state == WAIT_ORDER_TEXT:
                 return await self.process_order_text(update, context)
-            elif context.user_data['state'] == WAIT_AI_DESCRIPTION:
+            elif state == WAIT_AI_DESCRIPTION:
                 return await self.process_ai_description(update, context)
+            elif state == WAIT_CONFIRM:
+                # Если мы ожидаем подтверждения, но пользователь отправил текст
+                await update.message.reply_text(
+                    "Пожалуйста, используйте кнопки 'Да, всё верно' или 'Нет, отменить' "
+                    "для подтверждения или отмены заказа."
+                )
+                return
         
         # Обработка текстовых кнопок меню
         elif text == "📋 Просмотр очереди":
@@ -717,7 +737,11 @@ class TelegramBot:
             await self.cmd_new_order(update, context)
         elif text == "❓ Помощь":
             await self.cmd_help(update, context)
-        # В этом режиме мы НЕ отвечаем на произвольные тексты, просто игнорируем их
+        # Игнорируем другие тексты, которые не соответствуют известным командам
+        else:
+            await update.message.reply_text(
+                "Пожалуйста, используйте кнопки меню или /help для получения списка доступных команд."
+            )
     
     async def button_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Обрабатывает нажатия на inline-кнопки"""
@@ -740,7 +764,16 @@ class TelegramBot:
             await self.confirm_order_callback(query, context)
         elif query.data == "cancel":
             await self.cancel_order_callback(query, context)
-
+        elif query.data == COMMAND_STATUS:
+            # Добавляем обработку кнопки статуса заказа
+            await query.edit_message_text("Введите ID заказа, например: /status 123")
+        else:
+            # Если команда неизвестна
+            logger.warning(f"Получена неизвестная команда кнопки: {query.data}")
+            await query.edit_message_text(
+                "Не удалось обработать команду. Пожалуйста, попробуйте еще раз или используйте /help."
+            )
+    
     async def cmd_new_order_callback(self, query, context):
         """Обрабатывает нажатие кнопки создания нового заказа"""
         # Устанавливаем состояние в user_data
