@@ -458,6 +458,137 @@ class GoogleDriveIntegration:
             logger.error(f"Ошибка при поиске текстовых файлов: {str(e)}")
             return []
     
+    def excel_test(self, folder_link=""):
+        """
+        Тестовая функция для работы с Excel файлами в Google Drive.
+        Создает и загружает Excel файл с тестовыми данными.
+        
+        Args:
+            folder_link (str): Ссылка на папку в Google Drive (опционально)
+            
+        Returns:
+            dict: Результаты тестирования с информацией о созданных файлах
+        """
+        import pandas as pd
+        import numpy as np
+        from datetime import datetime
+        
+        logger.info("Начало тестирования работы с Excel файлами")
+        
+        results = {
+            "success": False, 
+            "created_files": [],
+            "errors": []
+        }
+        
+        try:
+            # Если передана ссылка на папку, пробуем извлечь ID
+            if folder_link and "drive.google.com" in folder_link:
+                # Извлекаем ID папки из ссылки
+                import re
+                folder_id_match = re.search(r"folders/([a-zA-Z0-9_-]+)", folder_link)
+                if folder_id_match:
+                    test_folder_id = folder_id_match.group(1)
+                    logger.info(f"Извлечен ID папки: {test_folder_id}")
+                    # Временно сохраняем старый ID и устанавливаем новый
+                    old_folder_id = self.folder_id
+                    self.folder_id = test_folder_id
+                    results["folder_id"] = test_folder_id
+                else:
+                    logger.warning(f"Не удалось извлечь ID папки из ссылки: {folder_link}")
+                    results["errors"].append("Не удалось извлечь ID папки из ссылки")
+            
+            # 1. Создаем временную директорию для тестов
+            from pathlib import Path
+            test_dir = Path("data/test_excel")
+            test_dir.mkdir(exist_ok=True, parents=True)
+            
+            # 2. Создаем DataFrame с тестовыми данными заказов
+            test_data = {
+                "ID": [1, 2, 3],
+                "Клиент": ["ООО Тест", "ИП Иванов", "АО Пример"],
+                "Заказ": ["Визитки 100 шт.", "Баннер 2x3м", "Буклеты A4 50 шт."],
+                "Дата создания": [datetime.now(), datetime.now(), datetime.now()],
+                "Срок исполнения": ["21.03.2025", "22.03.2025", "25.03.2025"],
+                "Статус": ["Новый", "Новый", "Новый"]
+            }
+            
+            df = pd.DataFrame(test_data)
+            
+            # 3. Сохраняем Excel файл локально
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            excel_filename = f"test_orders_{timestamp}.xlsx"
+            excel_path = test_dir / excel_filename
+            
+            df.to_excel(excel_path, index=False, engine='openpyxl')
+            logger.info(f"Создан локальный Excel файл: {excel_path}")
+            results["local_file"] = str(excel_path)
+            
+            # 4. Загружаем файл в Google Drive
+            upload_result = self.upload_file(excel_path, excel_filename)
+            if upload_result:
+                logger.info(f"Excel файл успешно загружен в Google Drive: {excel_filename}")
+                results["created_files"].append(excel_filename)
+            else:
+                logger.error("Не удалось загрузить Excel файл в Google Drive")
+                results["errors"].append("Ошибка загрузки Excel файла")
+                return results
+            
+            # 5. Пробуем найти загруженный файл
+            file_info = self.find_file_by_name(excel_filename)
+            if file_info:
+                logger.info(f"Файл найден в Google Drive: {file_info.get('id')}")
+                results["file_id"] = file_info.get('id')
+            else:
+                logger.error(f"Не удалось найти загруженный файл: {excel_filename}")
+                results["errors"].append("Ошибка поиска загруженного файла")
+                return results
+            
+            # 6. Скачиваем файл с новым именем для проверки
+            download_filename = f"downloaded_{excel_filename}"
+            download_path = test_dir / download_filename
+            
+            download_result = self.download_file(excel_filename, download_path)
+            if download_result:
+                logger.info(f"Excel файл успешно скачан: {download_path}")
+                results["downloaded_file"] = str(download_path)
+            else:
+                logger.error("Не удалось скачать Excel файл из Google Drive")
+                results["errors"].append("Ошибка скачивания Excel файла")
+                return results
+            
+            # 7. Загружаем скачанный файл и проверяем данные
+            try:
+                downloaded_df = pd.read_excel(download_path, engine='openpyxl')
+                if len(downloaded_df) == len(df):
+                    logger.info("Проверка данных Excel файла прошла успешно")
+                    results["data_verification"] = "OK"
+                else:
+                    logger.warning("Количество строк в скачанном файле не совпадает с оригиналом")
+                    results["data_verification"] = "WARNING: размер данных не совпадает"
+            except Exception as e:
+                logger.error(f"Ошибка при проверке скачанного файла: {str(e)}")
+                results["errors"].append(f"Ошибка проверки скачанного файла: {str(e)}")
+            
+            # Если дошли до этой точки без критических ошибок, тест успешен
+            results["success"] = len(results["errors"]) == 0
+            
+            # Восстанавливаем исходный ID папки, если он был изменен
+            if folder_link and "drive.google.com" in folder_link and "old_folder_id" in locals():
+                self.folder_id = old_folder_id
+            
+            return results
+            
+        except Exception as e:
+            logger.error(f"Ошибка при тестировании Excel файлов: {str(e)}")
+            results["errors"].append(str(e))
+            
+            # Восстанавливаем исходный ID папки, если он был изменен
+            if folder_link and "drive.google.com" in folder_link and "old_folder_id" in locals():
+                self.folder_id = old_folder_id
+                
+            return results
+    
 if __name__ == "__main__":
     # Пример использования
     try:

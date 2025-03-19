@@ -183,6 +183,7 @@ class TelegramBot:
         # Команды управления заказами
         self.application.add_handler(CommandHandler("queue", self.cmd_queue))
         self.application.add_handler(CommandHandler("status", self.cmd_status))
+        self.application.add_handler(CommandHandler("drive_test", self.cmd_drive_test))  # Добавляем команду для тестирования
         
         # Обработчик для кнопок меню (должен быть до ConversationHandler)
         self.application.add_handler(CallbackQueryHandler(
@@ -409,6 +410,60 @@ class TelegramBot:
             logger.error(f"Ошибка при получении информации о заказе: {str(e)}")
             await update.message.reply_text(f"Произошла ошибка: {str(e)}")
     
+    async def cmd_drive_test(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """
+        Тестирует функциональность Google Drive для работы с Excel файлами
+        """
+        user_id = update.effective_user.id
+        if not await self._check_admin(user_id):
+            await update.message.reply_text("⛔ У вас нет прав для выполнения этой команды.")
+            return
+            
+        # Проверяем наличие Google Drive интеграции
+        if not hasattr(self, 'drive_integration') or not self.drive_integration:
+            await update.message.reply_text("⚠️ Интеграция с Google Drive не настроена.")
+            return
+            
+        # Отправляем сообщение о начале тестирования
+        msg = await update.message.reply_text("🔄 Начинаю тестирование работы с Excel файлами в Google Drive...")
+        
+        try:
+            # Запускаем тестовую функцию
+            results = self.drive_integration.excel_test()
+            
+            if results["success"]:
+                # Формируем отчет об успешном тестировании
+                report = "✅ Тестирование Excel файлов в Google Drive прошло успешно!\n\n"
+                report += f"📂 Локальный файл: `{results.get('local_file', 'Н/Д')}`\n"
+                
+                if results.get("created_files"):
+                    files_str = ", ".join(results["created_files"])
+                    report += f"📤 Созданные файлы: `{files_str}`\n"
+                
+                if results.get("downloaded_file"):
+                    report += f"📥 Скачанный файл: `{results.get('downloaded_file')}`\n"
+                
+                if results.get("data_verification"):
+                    report += f"🔍 Проверка данных: {results.get('data_verification')}\n"
+                    
+                await msg.edit_text(report, parse_mode=ParseMode.MARKDOWN)
+            else:
+                # Формируем отчет об ошибках
+                error_report = "❌ Тестирование Excel файлов в Google Drive завершилось с ошибками:\n\n"
+                
+                if results.get("errors"):
+                    errors_str = "\n- ".join(results["errors"])
+                    error_report += f"Ошибки:\n- {errors_str}\n\n"
+                
+                if results.get("created_files"):
+                    files_str = ", ".join(results["created_files"])
+                    error_report += f"📤 Созданные файлы: `{files_str}`\n"
+                    
+                await msg.edit_text(error_report, parse_mode=ParseMode.MARKDOWN)
+        except Exception as e:
+            logger.error(f"Ошибка при тестировании Excel файлов: {str(e)}")
+            await msg.edit_text(f"❌ Произошла ошибка при тестировании: {str(e)}")
+    
     async def cmd_new_order(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Начинает процесс создания нового заказа"""
         # Устанавливаем состояние в user_data
@@ -443,17 +498,30 @@ class TelegramBot:
                 "Это команда меню, а не текст заказа. Пожалуйста, введите текстовое описание заказа или /cancel для отмены."
             )
             return WAIT_ORDER_TEXT
+            
+        # Сохраняем текст заказа в контексте пользователя
         context.user_data['order_text'] = order_text
         
         # Получаем chat_id для идентификации пользователя
         chat_id = update.effective_chat.id
         
-        await update.message.reply_text("Обрабатываю информацию о заказе...")
+        # Отправляем сообщение о начале обработки
+        processing_msg = await update.message.reply_text("Обрабатываю информацию о заказе...")
         
         try:
             if self.data_processor:
                 # Используем LLM (Claude) для извлечения структурированных данных
                 order_data = self.data_processor.extract_order_from_text(order_text)
+                
+                # Проверяем, что данные были извлечены
+                if not order_data or not isinstance(order_data, dict):
+                    logger.error(f"Не удалось извлечь данные заказа: {order_data}")
+                    await update.message.reply_text(
+                        "Не удалось извлечь данные из текста заказа. "
+                        "Пожалуйста, попробуйте описать заказ более подробно."
+                    )
+                    return WAIT_ORDER_TEXT
+                
                 # Сохраняем данные заказа в контексте пользователя
                 context.user_data['order_data'] = order_data
                 
@@ -461,22 +529,22 @@ class TelegramBot:
                 if not hasattr(self, 'order_data_storage'):
                     self.order_data_storage = {}
                 self.order_data_storage[chat_id] = order_data
-                logger.info(f"Сохранены данные заказа для чата {chat_id}: {order_data}")
+                logger.info(f"Сохранены данные заказа для чата {chat_id}")
                 
                 # Формируем сообщение с извлеченной информацией
                 message = "<b>Извлеченная информация о заказе:</b>\n\n"
                 message += f"<b>Клиент:</b> {order_data.get('customer', 'Не удалось определить')}\n"
                 
-                if 'contact' in order_data:
+                if 'contact' in order_data and order_data['contact']:
                     message += f"<b>Контакт:</b> {order_data['contact']}\n"
                     
-                if 'description' in order_data:
+                if 'description' in order_data and order_data['description']:
                     message += f"<b>Описание:</b> {order_data['description']}\n"
                     
-                if 'quantity' in order_data:
+                if 'quantity' in order_data and order_data['quantity']:
                     message += f"<b>Количество:</b> {order_data['quantity']}\n"
                     
-                if 'deadline' in order_data:
+                if 'deadline' in order_data and order_data['deadline']:
                     message += f"<b>Срок выполнения:</b> {order_data['deadline']}\n"
                 
                 # Создаем кнопки для подтверждения
@@ -486,7 +554,8 @@ class TelegramBot:
                 ]
                 reply_markup = InlineKeyboardMarkup(keyboard)
                 
-                await update.message.reply_text(
+                # Редактируем сообщение о процессе, добавляя результаты
+                await processing_msg.edit_text(
                     message + "\n<b>Всё верно? Нажмите на соответствующую кнопку:</b>", 
                     parse_mode=ParseMode.HTML,
                     reply_markup=reply_markup
@@ -499,10 +568,10 @@ class TelegramBot:
                 )
                 return ConversationHandler.END
         except Exception as e:
-            logger.error(f"Ошибка при обработке заказа: {str(e)}")
+            logger.error(f"Ошибка при обработке текста заказа: {str(e)}")
             await update.message.reply_text(
-                f"Произошла ошибка при обработке заказа: {str(e)}\n"
-                "Пожалуйста, попробуйте позже или свяжитесь с администратором."
+                f"Произошла ошибка при обработке заказа: {str(e)}. "
+                "Пожалуйста, попробуйте еще раз или обратитесь к администратору."
             )
             return ConversationHandler.END
     
@@ -833,12 +902,7 @@ class TelegramBot:
             "Для отмены введите /cancel"
         )
         
-        # Важно: удаляем inline-кнопки, чтобы их текст не был обработан как заказ
-        await query.message.reply_text(
-            "⏬ Теперь введите текст вашего заказа ниже ⏬", 
-            reply_markup=ReplyKeyboardRemove()
-        )
-        
+        # Важно: не создаем никаких информационных сообщений, пока пользователь не введёт текст заказа
         return WAIT_ORDER_TEXT
     
     async def cmd_help_callback(self, query, context):
