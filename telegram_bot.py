@@ -125,7 +125,7 @@ class TelegramNotifier:
 class TelegramBot:
     """Основной класс Telegram-бота для управления очередью печати и общения с AI"""
     
-    def __init__(self, token, data_processor=None, queue_manager=None):
+    def __init__(self, token, data_processor=None, queue_manager=None, drive_integration=None):
         """
         Инициализирует Telegram-бота.
         
@@ -133,10 +133,12 @@ class TelegramBot:
             token (str): Токен API Telegram-бота
             data_processor: Процессор данных заказов
             queue_manager: Менеджер очереди печати
+            drive_integration: Интеграция с Google Drive
         """
         self.token = token
         self.data_processor = data_processor
         self.queue_manager = queue_manager
+        self.drive_integration = drive_integration
         
         # Создаем экземпляр Claude API клиента для общения с AI
         try:

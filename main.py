@@ -81,7 +81,8 @@ class PrintQueueAgent:
             self.telegram_bot = TelegramBot(
                 self.telegram_token,
                 data_processor=self,
-                queue_manager=self
+                queue_manager=self,
+                drive_integration=self.gdrive
             )
         else:
             logger.warning("Не указан токен Telegram-бота. Уведомления через Telegram недоступны.")
