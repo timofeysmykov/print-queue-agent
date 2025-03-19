@@ -184,6 +184,12 @@ class TelegramBot:
         self.application.add_handler(CommandHandler("queue", self.cmd_queue))
         self.application.add_handler(CommandHandler("status", self.cmd_status))
         
+        # Обработчик для кнопок меню (должен быть до ConversationHandler)
+        self.application.add_handler(CallbackQueryHandler(
+            self.button_callback, 
+            pattern=f"^({COMMAND_QUEUE}|{COMMAND_HELP}|{COMMAND_STATUS})$"
+        ))
+        
         # Обработчик разговора для создания нового заказа
         order_conv_handler = ConversationHandler(
             entry_points=[
@@ -191,18 +197,26 @@ class TelegramBot:
                 CallbackQueryHandler(self.cmd_new_order_callback, pattern=f"^{COMMAND_NEW_ORDER}$")
             ],
             states={
-                WAIT_ORDER_TEXT: [MessageHandler(filters.TEXT & ~filters.COMMAND, self.process_order_text)],
+                WAIT_ORDER_TEXT: [
+                    MessageHandler(filters.TEXT & ~filters.COMMAND, self.process_order_text)
+                ],
                 WAIT_CONFIRM: [
                     CallbackQueryHandler(self.confirm_order_callback, pattern='^confirm$'),
-                    CallbackQueryHandler(self.cancel_order_callback, pattern='^cancel$'),
+                    CallbackQueryHandler(self.cancel_order_callback, pattern='^cancel$')
+                ],
+                PROCESSING_AI_REQUEST: [
+                    MessageHandler(filters.TEXT & ~filters.COMMAND, self.unknown_command)
                 ]
             },
-            fallbacks=[CommandHandler("cancel", self.cancel_order)]
+            fallbacks=[
+                CommandHandler("cancel", self.cancel_order),
+                # Дополнительно обрабатываем любые кнопки в fallbacks
+                CallbackQueryHandler(self.button_callback, pattern=".*")
+            ],
+            # Важно: установим allow_reentry=True для повторного входа
+            allow_reentry=True
         )
         self.application.add_handler(order_conv_handler)
-        
-        # Обработчик для кнопок (неотносящихся к состояниям)
-        self.application.add_handler(CallbackQueryHandler(self.button_callback))
         
         # Обработчик неизвестных команд
         self.application.add_handler(MessageHandler(filters.COMMAND, self.unknown_command))
@@ -401,7 +415,10 @@ class TelegramBot:
         context.user_data['state'] = WAIT_ORDER_TEXT
         
         await update.message.reply_text(
-            "Введите информацию о заказе:"
+            "📝 Пожалуйста, опишите ваш заказ.\n"
+            "Укажите как можно больше деталей: тип печати, количество копий, формат, срок и т.д.\n"
+            "Для отмены введите /cancel",
+            reply_markup=ReplyKeyboardRemove()  # Убираем клавиатуру для более удобного ввода текста
         )
         return WAIT_ORDER_TEXT
     
@@ -410,19 +427,22 @@ class TelegramBot:
         # Проверяем, что мы действительно ожидаем текст заказа
         if 'state' not in context.user_data or context.user_data['state'] != WAIT_ORDER_TEXT:
             # Если мы попали сюда не в нужном состоянии, игнорируем
+            logger.warning(f"process_order_text вызван не в нужном состоянии: {context.user_data.get('state')}")
             return ConversationHandler.END
             
         order_text = update.message.text
         
-        # Проверяем, что текст не является командой меню
-        menu_commands = ["📋 Просмотр очереди", "➕ Новый заказ", "❓ Помощь"]
+        # Проверяем, что текст не является командой меню или кнопкой
+        menu_commands = ["📋 Просмотр очереди", "➕ Новый заказ", "❓ Помощь", 
+                         "Помощь", "👋 Начать", "Начать", "Новый заказ", 
+                         "Просмотр очереди"]
+        
         if order_text in menu_commands:
+            logger.warning(f"Пользователь отправил команду меню '{order_text}' как текст заказа")
             await update.message.reply_text(
-                "Кажется, вы выбрали команду меню вместо ввода информации о заказе. "
-                "Пожалуйста, введите текст заказа или выберите /cancel для отмены."
+                "Это команда меню, а не текст заказа. Пожалуйста, введите текстовое описание заказа или /cancel для отмены."
             )
             return WAIT_ORDER_TEXT
-            
         context.user_data['order_text'] = order_text
         
         # Получаем chat_id для идентификации пользователя
@@ -746,42 +766,79 @@ class TelegramBot:
     async def button_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Обрабатывает нажатия на inline-кнопки"""
         query = update.callback_query
-        # Обязательно отправляем ответ, чтобы убрать часы загрузки
+        
+        # Логируем нажатую кнопку
+        logger.info(f"Нажата кнопка с данными: {query.data}")
+        
+        # Получаем данные из кнопки
+        callback_data = query.data
+        
+        # Предотвращаем повторные нажатия (мигание часиков)
         await query.answer()
         
-        # Выводим дополнительную информацию для отладки при наличии кнопки confirm
-        if query.data == "confirm":
-            logger.info(f"Нажата кнопка подтверждения. User data: {context.user_data}")
+        # Обработка кнопок подтверждения/отмены заказа
+        if callback_data == 'confirm':
+            return await self.confirm_order_callback(query, context)
+        elif callback_data == 'cancel':
+            return await self.cancel_order_callback(query, context)
         
-        # Обрабатываем разные типы кнопок
-        if query.data == COMMAND_QUEUE:
-            await self.cmd_queue_callback(query, context)
-        elif query.data == COMMAND_NEW_ORDER:
-            await self.cmd_new_order_callback(query, context)
-        elif query.data == COMMAND_HELP:
-            await self.cmd_help_callback(query, context)
-        elif query.data == "confirm":
-            await self.confirm_order_callback(query, context)
-        elif query.data == "cancel":
-            await self.cancel_order_callback(query, context)
-        elif query.data == COMMAND_STATUS:
-            # Добавляем обработку кнопки статуса заказа
-            await query.edit_message_text("Введите ID заказа, например: /status 123")
-        else:
-            # Если команда неизвестна
-            logger.warning(f"Получена неизвестная команда кнопки: {query.data}")
+        # Обработка меню и других действий
+        elif callback_data == COMMAND_NEW_ORDER:
+            return await self.cmd_new_order_callback(query, context)
+        elif callback_data == COMMAND_QUEUE:
+            return await self.cmd_queue_callback(query, context)
+        elif callback_data == COMMAND_HELP:
+            return await self.cmd_help_callback(query, context)
+        elif callback_data == COMMAND_STATUS:
+            # Запрашиваем ID заказа
             await query.edit_message_text(
-                "Не удалось обработать команду. Пожалуйста, попробуйте еще раз или используйте /help."
+                "Введите номер заказа, чтобы проверить его статус:"
             )
+            # Устанавливаем состояние ожидания ID заказа
+            context.user_data['waiting_for_order_id'] = True
+            return
+        elif callback_data == COMMAND_EXIT_AI:
+            # Выход из режима общения с AI
+            if 'ai_mode' in context.user_data:
+                del context.user_data['ai_mode']
+            
+            await query.edit_message_text(
+                "Режим общения с AI выключен. Используйте меню для выбора действий."
+            )
+            
+            # Показываем основное меню
+            await self._show_main_menu(query.message.chat_id)
+            return
+        else:
+            # Обработка неизвестных команд
+            logger.warning(f"Неизвестная команда кнопки: {callback_data}")
+            await query.edit_message_text(
+                "Неизвестная команда. Используйте меню для выбора действий.",
+                reply_markup=self._get_main_menu_keyboard()
+            )
+            return
     
     async def cmd_new_order_callback(self, query, context):
         """Обрабатывает нажатие кнопки создания нового заказа"""
-        # Устанавливаем состояние в user_data
+        # Очищаем пользовательские данные для начала нового заказа
+        context.user_data.clear()
+        
+        # Устанавливаем состояние "ожидание текста заказа"
         context.user_data['state'] = WAIT_ORDER_TEXT
         
+        # Отправляем сообщение с просьбой описать заказ
         await query.edit_message_text(
-            "Введите информацию о заказе:"
+            "📝 Пожалуйста, опишите ваш заказ.\n"
+            "Укажите как можно больше деталей: тип печати, количество копий, формат, срок и т.д.\n"
+            "Для отмены введите /cancel"
         )
+        
+        # Важно: удаляем inline-кнопки, чтобы их текст не был обработан как заказ
+        await query.message.reply_text(
+            "⏬ Теперь введите текст вашего заказа ниже ⏬", 
+            reply_markup=ReplyKeyboardRemove()
+        )
+        
         return WAIT_ORDER_TEXT
     
     async def cmd_help_callback(self, query, context):
