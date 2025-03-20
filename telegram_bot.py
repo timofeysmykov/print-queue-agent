@@ -653,6 +653,9 @@ class TelegramBot:
             
             # Пытаемся получить данные заказа из контекста пользователя
             order_data = context.user_data.get('order_data')
+            logger.info(f"Данные заказа из контекста: {order_data}")
+            logger.info(f"Состояние пользователя: {context.user_data.get('state')}")
+            logger.info(f"Весь контекст пользователя: {context.user_data}")
             
             # Если данных нет в контексте, пробуем получить из глобального хранилища
             if not order_data and hasattr(self, 'order_data_storage') and chat_id in self.order_data_storage:
@@ -870,11 +873,14 @@ class TelegramBot:
         
         # Проверяем, находимся ли мы в состоянии диалога ожидания подтверждения
         user_state = context.user_data.get('state')
+        logger.info(f"Текущее состояние пользователя: {user_state}, ожидаемое: {WAIT_CONFIRM}")
         
         # Обработка кнопок подтверждения/отмены заказа
         if callback_data == 'confirm' and user_state == WAIT_CONFIRM:
+            logger.info("Перенаправление на confirm_order_callback")
             return await self.confirm_order_callback(query, context)
         elif callback_data == 'cancel' and user_state == WAIT_CONFIRM:
+            logger.info("Перенаправление на cancel_order_callback")
             return await self.cancel_order_callback(query, context)
         
         # Обработка меню и других действий
