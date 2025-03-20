@@ -187,12 +187,6 @@ class TelegramBot:
         self.application.add_handler(CommandHandler("status", self.cmd_status))
         self.application.add_handler(CommandHandler("drive_test", self.cmd_drive_test))  # Добавляем команду для тестирования
         
-        # Обработчик для кнопок меню (должен быть до ConversationHandler)
-        self.application.add_handler(CallbackQueryHandler(
-            self.button_callback, 
-            pattern=f"^({COMMAND_QUEUE}|{COMMAND_HELP}|{COMMAND_STATUS})$"
-        ))
-        
         # Обработчик разговора для создания нового заказа
         order_conv_handler = ConversationHandler(
             entry_points=[
@@ -213,13 +207,17 @@ class TelegramBot:
             },
             fallbacks=[
                 CommandHandler("cancel", self.cancel_order),
-                # Дополнительно обрабатываем любые кнопки в fallbacks
-                CallbackQueryHandler(self.button_callback, pattern=".*")
             ],
             # Важно: установим allow_reentry=True для повторного входа
             allow_reentry=True
         )
         self.application.add_handler(order_conv_handler)
+        
+        # Обработчик для кнопок меню (должен быть ПОСЛЕ ConversationHandler)
+        self.application.add_handler(CallbackQueryHandler(
+            self.button_callback, 
+            pattern=f"^({COMMAND_QUEUE}|{COMMAND_HELP}|{COMMAND_STATUS})$"
+        ))
         
         # Обработчик неизвестных команд
         self.application.add_handler(MessageHandler(filters.COMMAND, self.unknown_command))
