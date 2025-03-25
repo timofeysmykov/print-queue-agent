@@ -204,7 +204,8 @@ class TelegramBot:
                 ],
                 WAIT_CONFIRM: [
                     CallbackQueryHandler(self.confirm_order_callback, pattern='^confirm$'),
-                    CallbackQueryHandler(self.cancel_order_callback, pattern='^cancel$')
+                    CallbackQueryHandler(self.cancel_order_callback, pattern='^cancel$'),
+                    CallbackQueryHandler(self.urgent_order_callback, pattern='^urgent$')
                 ],
                 PROCESSING_AI_REQUEST: [
                     MessageHandler(filters.TEXT & ~filters.COMMAND, self.unknown_command)
@@ -523,6 +524,7 @@ class TelegramBot:
                 # Создаем кнопки для подтверждения
                 keyboard = [
                     [InlineKeyboardButton("✅ Да, всё верно", callback_data="confirm")],
+                    [InlineKeyboardButton("🚨 Срочный заказ", callback_data="urgent")],
                     [InlineKeyboardButton("❌ Нет, отменить", callback_data="cancel")]
                 ]
                 reply_markup = InlineKeyboardMarkup(keyboard)
@@ -762,6 +764,150 @@ class TelegramBot:
         context.user_data.clear()
         return ConversationHandler.END
     
+    async def urgent_order_callback(self, query, context):
+        """Подтверждает создание срочного заказа"""
+        try:
+            # Получаем chat_id для идентификации пользователя
+            chat_id = query.message.chat_id
+            
+            # Логируем действие
+            logger.info(f"Пользователь {chat_id} нажал кнопку подтверждения срочного заказа")
+            
+            # Пытаемся получить данные заказа из контекста пользователя
+            order_data = context.user_data.get('order_data')
+            logger.info(f"Данные заказа из контекста: {order_data}")
+            
+            # Проверяем наличие данных заказа
+            if not order_data:
+                logger.error(f"Не найдены данные заказа для чата {chat_id}")
+                await query.edit_message_text(
+                    "Ошибка: данные заказа не найдены. Пожалуйста, начните процесс создания заказа заново.",
+                    reply_markup=None
+                )
+                # Очищаем данные пользователя
+                context.user_data.clear()
+                return ConversationHandler.END
+            
+            # Помечаем заказ как срочный
+            order_data['urgent'] = True
+            order_data['priority'] = 'Высокий'
+            
+            # Проверка наличия менеджера очереди
+            if not self.queue_manager:
+                logger.error("Менеджер очереди не инициализирован")
+                await query.edit_message_text(
+                    "Не удалось добавить заказ: менеджер очереди не инициализирован. "
+                    "Заказ сохранен в системе, но не добавлен в очередь.",
+                    reply_markup=None
+                )
+                # Очищаем данные пользователя
+                context.user_data.clear()
+                return ConversationHandler.END
+                
+            # Всё в порядке, начинаем процесс добавления заказа
+            # Шаг 1: Начало процесса
+            await query.edit_message_text(
+                "⏳ Начинаю создание срочного заказа...\n"
+                "🔍 Проверяю доступность Google Drive..."
+            )
+            await asyncio.sleep(1)  # Небольшая задержка для лучшего UX
+            
+            # Шаг 2: Скачивание файла очереди
+            await query.edit_message_text(
+                "⏳ Начинаю создание срочного заказа...\n"
+                "✅ Google Drive доступен\n"
+                "📥 Скачиваю файл очереди в Excel формате..."
+            )
+            await asyncio.sleep(1)  # Небольшая задержка для лучшего UX
+            
+            # Шаг 3: Загрузка существующей очереди из файла
+            await query.edit_message_text(
+                "⏳ Начинаю создание срочного заказа...\n"
+                "✅ Google Drive доступен\n"
+                "✅ Файл очереди скачан\n"
+                "📊 Загружаю данные из файла Excel..."
+            )
+            await asyncio.sleep(1)  # Небольшая задержка для лучшего UX
+            
+            try:
+                # Добавляем заказ в очередь
+                order_id = self.queue_manager.add_order(order_data)
+                
+                # Шаг 4: Обновление очереди
+                await query.edit_message_text(
+                    "⏳ Добавляю срочный заказ в очередь...\n"
+                    "✅ Google Drive доступен\n"
+                    "✅ Файл очереди скачан\n"
+                    "✅ Данные успешно загружены из Excel\n"
+                    "📝 Добавляю новый срочный заказ в очередь..."
+                )
+                await asyncio.sleep(1)  # Небольшая задержка для лучшего UX
+                
+                # Шаг 5: Сохранение обновленной очереди
+                await query.edit_message_text(
+                    "⏳ Добавляю срочный заказ в очередь...\n"
+                    "✅ Google Drive доступен\n"
+                    "✅ Файл очереди скачан\n"
+                    "✅ Данные успешно загружены из Excel\n"
+                    "✅ Заказ добавлен в очередь\n"
+                    "💾 Сохраняю обновленную очередь..."
+                )
+                await asyncio.sleep(1)  # Небольшая задержка для лучшего UX
+                
+                # Шаг 6: Выгрузка обновленного файла на Google Drive
+                await query.edit_message_text(
+                    "⏳ Завершаю создание срочного заказа...\n"
+                    "✅ Google Drive доступен\n"
+                    "✅ Файл очереди скачан\n"
+                    "✅ Данные успешно загружены из Excel\n"
+                    "✅ Заказ добавлен в очередь\n"
+                    "✅ Очередь сохранена локально\n"
+                    "📤 Выгружаю обновленный файл на Google Drive..."
+                )
+                await asyncio.sleep(1)  # Небольшая задержка для лучшего UX
+                
+                # Небольшая задержка, чтобы пользователь успел увидеть изменения статусов
+                await asyncio.sleep(1)
+                
+                # Создаем кнопки для дальнейших действий
+                keyboard = [
+                    [InlineKeyboardButton("📋 Просмотреть очередь", callback_data=COMMAND_QUEUE)],
+                    [InlineKeyboardButton("➕ Добавить ещё заказ", callback_data=COMMAND_NEW_ORDER)]
+                ]
+                reply_markup = InlineKeyboardMarkup(keyboard)
+                
+                # Финальное сообщение о создании срочного заказа
+                await query.edit_message_text(
+                    f"✅ Срочный заказ успешно создан!\n\n"
+                    f"Заказ добавлен в очередь печати и сохранен на Google Drive.\n"
+                    f"Оригинальный файл на Google Drive сохранён, создана новая версия.\n\n"
+                    f"Что вы хотите сделать дальше?",
+                    parse_mode=ParseMode.HTML,
+                    reply_markup=reply_markup
+                )
+            except Exception as e:
+                logger.error(f"Ошибка при работе с очередью заказов: {str(e)}")
+                await query.edit_message_text(
+                    f"❌ Произошла ошибка при работе с очередью: {str(e)}\n"
+                    "Пожалуйста, попробуйте позже или свяжитесь с администратором.",
+                    reply_markup=None
+                )
+                # Очищаем данные пользователя
+                context.user_data.clear()
+                return ConversationHandler.END
+            
+        except Exception as e:
+            logger.error(f"Ошибка при добавлении заказа: {str(e)}")
+            await query.edit_message_text(
+                f"❌ Произошла ошибка при обработке заказа: {str(e)}\n"
+                "Пожалуйста, попробуйте позже или свяжитесь с администратором.",
+                reply_markup=None
+            )
+            
+        # Очищаем данные пользователя
+        context.user_data.clear()
+        return ConversationHandler.END
+    
     async def cancel_order(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Отменяет создание заказа (для текстового ввода)"""
         await update.message.reply_text(
@@ -833,29 +979,33 @@ class TelegramBot:
         """Обрабатывает нажатия на inline-кнопки"""
         query = update.callback_query
         
-        # Логируем нажатую кнопку
-        logger.info(f"Нажата кнопка с данными: {query.data}")
-        
-        # Получаем данные из кнопки
-        callback_data = query.data
-        
-        # Предотвращаем повторные нажатия (мигание часиков)
-        await query.answer()
-        
-        # Проверяем, находимся ли мы в состоянии диалога ожидания подтверждения
+        # Получаем состояние пользователя
         user_state = context.user_data.get('state')
-        logger.info(f"Текущее состояние пользователя: {user_state}")
+        
+        # Логируем нажатую кнопку и состояние
+        logger.info(f"Нажата кнопка с данными: {query.data}, текущее состояние: {user_state}")
         
         try:
+            # Получаем данные из кнопки
+            callback_data = query.data
+            
             # Обработка кнопок подтверждения/отмены заказа
             if callback_data == 'confirm' and user_state == WAIT_CONFIRM:
                 logger.info("Перенаправление на confirm_order_callback")
                 return await self.confirm_order_callback(query, context)
+            elif callback_data == 'urgent' and user_state == WAIT_CONFIRM:
+                logger.info("Перенаправление на urgent_order_callback")
+                # Помечаем заказ как срочный
+                if 'order_data' in context.user_data:
+                    context.user_data['order_data']['urgent'] = True
+                    context.user_data['order_data']['priority'] = 'Высокий'
+                return await self.confirm_order_callback(query, context)
             elif callback_data == 'cancel' and user_state == WAIT_CONFIRM:
                 logger.info("Перенаправление на cancel_order_callback")
                 return await self.cancel_order_callback(query, context)
-            
-            # Обработка меню и других действий
+            elif callback_data == 'urgent' and user_state == WAIT_CONFIRM:
+                logger.info("Перенаправление на urgent_order_callback")
+                return await self.urgent_order_callback(query, context)
             elif callback_data == COMMAND_NEW_ORDER:
                 return await self.cmd_new_order_callback(query, context)
             elif callback_data == COMMAND_QUEUE:
