@@ -979,6 +979,9 @@ class TelegramBot:
         """Обрабатывает нажатия на inline-кнопки"""
         query = update.callback_query
         
+        # Предотвращаем повторные нажатия (мигание часиков)
+        await query.answer()
+        
         # Получаем состояние пользователя
         user_state = context.user_data.get('state')
         
@@ -999,13 +1002,10 @@ class TelegramBot:
                 if 'order_data' in context.user_data:
                     context.user_data['order_data']['urgent'] = True
                     context.user_data['order_data']['priority'] = 'Высокий'
-                return await self.confirm_order_callback(query, context)
+                return await self.urgent_order_callback(query, context)
             elif callback_data == 'cancel' and user_state == WAIT_CONFIRM:
                 logger.info("Перенаправление на cancel_order_callback")
                 return await self.cancel_order_callback(query, context)
-            elif callback_data == 'urgent' and user_state == WAIT_CONFIRM:
-                logger.info("Перенаправление на urgent_order_callback")
-                return await self.urgent_order_callback(query, context)
             elif callback_data == COMMAND_NEW_ORDER:
                 return await self.cmd_new_order_callback(query, context)
             elif callback_data == COMMAND_QUEUE:
