@@ -25,7 +25,12 @@ from data_processing import OrderProcessor
 
 # Настройка логирования
 logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', 
+    level=logging.INFO,
+    handlers=[
+        logging.FileHandler("logs/telegram_bot.log"),
+        logging.StreamHandler()
+    ]
 )
 logger = logging.getLogger(__name__)
 
@@ -254,20 +259,13 @@ class TelegramBot:
         
     def start(self):
         """Запускает бота"""
-        import asyncio
-        
         try:
-            # Создаем и запускаем цикл для предварительной очистки
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            # Выполняем очистку состояния синхронно
-            loop.run_until_complete(asyncio.gather(
-                self.application.bot.delete_webhook(drop_pending_updates=True)
-            ))
-            
             # Запускаем бота в режиме получения обновлений
             logger.info("Запуск Telegram-бота...")
+            
+            # Используем встроенный механизм для очистки обновлений
             self.application.run_polling(drop_pending_updates=True)
+            
             logger.info("Бот запущен")
         except Exception as e:
             logger.error(f"Ошибка при запуске бота: {str(e)}")
@@ -464,6 +462,7 @@ class TelegramBot:
         """Начинает процесс создания нового заказа"""
         # Устанавливаем состояние в user_data
         context.user_data['state'] = WAIT_ORDER_TEXT
+        logger.info(f"Пользователь {update.effective_chat.id} начал создание нового заказа")
         
         await update.message.reply_text(
             "📝 Пожалуйста, опишите ваш заказ.\n"
@@ -501,16 +500,9 @@ class TelegramBot:
                 logger.info(f"Обработка заказа из Telegram: {order_text[:75]}...")
                 order_data = self.data_processor.process_order_text(order_text)
                 
-                # Сохраняем данные заказа в контексте пользователя и в глобальном хранилище
+                # Сохраняем данные заказа только в контексте пользователя
                 context.user_data['order_data'] = order_data
-                
-                # Создаем глобальное хранилище, если его еще нет
-                if not hasattr(self, 'order_data_storage'):
-                    self.order_data_storage = {}
-                
-                # Сохраняем данные заказа в глобальном хранилище
-                self.order_data_storage[chat_id] = order_data
-                logger.info(f"Сохранены данные заказа для чата {chat_id}")
+                logger.info(f"Сохранены данные заказа для чата {chat_id} в контексте пользователя")
                 
                 # Формируем сообщение с извлеченной информацией
                 message = "<b>Извлеченная информация о заказе:</b>\n\n"
@@ -642,15 +634,6 @@ class TelegramBot:
             # Пытаемся получить данные заказа из контекста пользователя
             order_data = context.user_data.get('order_data')
             logger.info(f"Данные заказа из контекста: {order_data}")
-            logger.info(f"Состояние пользователя: {context.user_data.get('state')}")
-            logger.info(f"Весь контекст пользователя: {context.user_data}")
-            
-            # Если данных нет в контексте, пробуем получить из глобального хранилища
-            if not order_data and hasattr(self, 'order_data_storage') and chat_id in self.order_data_storage:
-                order_data = self.order_data_storage[chat_id]
-                logger.info(f"Получены данные заказа из глобального хранилища для чата {chat_id}")
-                # Для дальнейшего использования сохраняем данные в контексте пользователя
-                context.user_data['order_data'] = order_data
             
             # Проверяем наличие данных заказа
             if not order_data:
@@ -861,48 +844,56 @@ class TelegramBot:
         
         # Проверяем, находимся ли мы в состоянии диалога ожидания подтверждения
         user_state = context.user_data.get('state')
-        logger.info(f"Текущее состояние пользователя: {user_state}, ожидаемое: {WAIT_CONFIRM}")
+        logger.info(f"Текущее состояние пользователя: {user_state}")
         
-        # Обработка кнопок подтверждения/отмены заказа
-        if callback_data == 'confirm' and user_state == WAIT_CONFIRM:
-            logger.info("Перенаправление на confirm_order_callback")
-            return await self.confirm_order_callback(query, context)
-        elif callback_data == 'cancel' and user_state == WAIT_CONFIRM:
-            logger.info("Перенаправление на cancel_order_callback")
-            return await self.cancel_order_callback(query, context)
-        
-        # Обработка меню и других действий
-        elif callback_data == COMMAND_NEW_ORDER:
-            return await self.cmd_new_order_callback(query, context)
-        elif callback_data == COMMAND_QUEUE:
-            return await self.cmd_queue_callback(query, context)
-        elif callback_data == COMMAND_HELP:
-            return await self.cmd_help_callback(query, context)
-        elif callback_data == COMMAND_STATUS:
-            # Запрашиваем ID заказа
-            await query.edit_message_text(
-                "Введите номер заказа, чтобы проверить его статус:"
-            )
-            # Устанавливаем состояние ожидания ID заказа
-            context.user_data['waiting_for_order_id'] = True
-            return
-        elif callback_data == COMMAND_EXIT_AI:
-            # Выход из режима общения с AI
-            if 'ai_mode' in context.user_data:
-                del context.user_data['ai_mode']
+        try:
+            # Обработка кнопок подтверждения/отмены заказа
+            if callback_data == 'confirm' and user_state == WAIT_CONFIRM:
+                logger.info("Перенаправление на confirm_order_callback")
+                return await self.confirm_order_callback(query, context)
+            elif callback_data == 'cancel' and user_state == WAIT_CONFIRM:
+                logger.info("Перенаправление на cancel_order_callback")
+                return await self.cancel_order_callback(query, context)
             
+            # Обработка меню и других действий
+            elif callback_data == COMMAND_NEW_ORDER:
+                return await self.cmd_new_order_callback(query, context)
+            elif callback_data == COMMAND_QUEUE:
+                return await self.cmd_queue_callback(query, context)
+            elif callback_data == COMMAND_HELP:
+                return await self.cmd_help_callback(query, context)
+            elif callback_data == COMMAND_STATUS:
+                # Запрашиваем ID заказа
+                await query.edit_message_text(
+                    "Введите номер заказа, чтобы проверить его статус:"
+                )
+                # Устанавливаем состояние ожидания ID заказа
+                context.user_data['waiting_for_order_id'] = True
+                return
+            elif callback_data == COMMAND_EXIT_AI:
+                # Выход из режима общения с AI
+                if 'ai_mode' in context.user_data:
+                    del context.user_data['ai_mode']
+                
+                await query.edit_message_text(
+                    "Режим общения с AI выключен. Используйте меню для выбора действий."
+                )
+                
+                # Показываем основное меню
+                await self._show_main_menu(query.message.chat_id)
+                return
+            else:
+                # Обработка неизвестных команд
+                logger.warning(f"Неизвестная команда кнопки: {callback_data}")
+                await query.edit_message_text(
+                    "Неизвестная команда. Используйте меню для выбора действий.",
+                    reply_markup=self._get_main_menu_keyboard()
+                )
+                return
+        except Exception as e:
+            logger.error(f"Ошибка при обработке нажатия кнопки: {str(e)}")
             await query.edit_message_text(
-                "Режим общения с AI выключен. Используйте меню для выбора действий."
-            )
-            
-            # Показываем основное меню
-            await self._show_main_menu(query.message.chat_id)
-            return
-        else:
-            # Обработка неизвестных команд
-            logger.warning(f"Неизвестная команда кнопки: {callback_data}")
-            await query.edit_message_text(
-                "Неизвестная команда. Используйте меню для выбора действий.",
+                f"Произошла ошибка: {str(e)}. Пожалуйста, попробуйте снова.",
                 reply_markup=self._get_main_menu_keyboard()
             )
             return
@@ -914,6 +905,9 @@ class TelegramBot:
         
         # Устанавливаем состояние "ожидание текста заказа"
         context.user_data['state'] = WAIT_ORDER_TEXT
+        
+        # Логируем действие
+        logger.info(f"Пользователь {query.message.chat_id} нажал кнопку создания нового заказа")
         
         # Отправляем сообщение с просьбой описать заказ
         await query.edit_message_text(
@@ -1006,6 +1000,10 @@ class TelegramBot:
 
     def process_order_description(self, text):
         """Структурирует описание заказа с помощью Claude API"""
+        if not self.claude_client:
+            logger.error("Claude API клиент не инициализирован")
+            return None
+            
         prompt = f"""Преобразуй описание заказа в JSON-формат:
         {{
             "client": str,
@@ -1016,7 +1014,107 @@ class TelegramBot:
             "quantity": int
         }}
         Текст: {text}"""
-        return claude_api.query(prompt)
+        
+        try:
+            return self.claude_client.query(prompt)
+        except Exception as e:
+            logger.error(f"Ошибка при запросе к Claude API: {str(e)}")
+            return None
+
+
+    async def _show_main_menu(self, chat_id):
+        """Показывает основное меню пользователю"""
+        keyboard = [
+            [KeyboardButton("📋 Просмотр очереди"), KeyboardButton("➕ Новый заказ")],
+            [KeyboardButton("❓ Помощь")]
+        ]
+        reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+        
+        await self.application.bot.send_message(
+            chat_id=chat_id,
+            text="Выберите действие из меню:",
+            reply_markup=reply_markup
+        )
+    
+    def _get_main_menu_keyboard(self):
+        """Возвращает клавиатуру основного меню"""
+        keyboard = [
+            [InlineKeyboardButton("📋 Просмотр очереди", callback_data=COMMAND_QUEUE)],
+            [InlineKeyboardButton("➕ Новый заказ", callback_data=COMMAND_NEW_ORDER)],
+            [InlineKeyboardButton("❓ Помощь", callback_data=COMMAND_HELP)]
+        ]
+        return InlineKeyboardMarkup(keyboard)
+    
+    async def process_ai_description(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Обрабатывает запрос к AI для описания заказа"""
+        if not self.claude_client:
+            await update.message.reply_text(
+                "Извините, функция AI недоступна в данный момент. Пожалуйста, опишите заказ вручную."
+            )
+            # Переводим пользователя в режим ожидания текста заказа
+            context.user_data['state'] = WAIT_ORDER_TEXT
+            return WAIT_ORDER_TEXT
+            
+        try:
+            # Получаем текст запроса от пользователя
+            query_text = update.message.text
+            
+            # Отправляем сообщение о начале обработки
+            processing_msg = await update.message.reply_text(
+                "🔄 <b>Обрабатываю ваш запрос к AI...</b>\n\n"
+                "Это может занять некоторое время.",
+                parse_mode=ParseMode.HTML
+            )
+            
+            # Формируем контекст для запроса
+            chat_id = update.effective_chat.id
+            if chat_id not in self.ai_conversations:
+                self.ai_conversations[chat_id] = []
+                
+            # Добавляем запрос пользователя в историю
+            self.ai_conversations[chat_id].append({"role": "user", "content": query_text})
+            
+            # Формируем полный запрос с контекстом
+            full_prompt = self.ai_context + "\n\n" + query_text
+            
+            # Отправляем запрос к Claude API
+            response = self.claude_client.query(full_prompt)
+            
+            # Добавляем ответ AI в историю
+            self.ai_conversations[chat_id].append({"role": "assistant", "content": response})
+            
+            # Редактируем сообщение о процессе, добавляя результаты
+            await processing_msg.edit_text(
+                f"<b>Ответ AI:</b>\n\n{response}", 
+                parse_mode=ParseMode.HTML
+            )
+            
+            # Создаем кнопки для выхода из режима AI
+            keyboard = [
+                [InlineKeyboardButton("📋 Просмотр очереди", callback_data=COMMAND_QUEUE)],
+                [InlineKeyboardButton("➕ Новый заказ", callback_data=COMMAND_NEW_ORDER)],
+                [InlineKeyboardButton("❌ Выйти из режима AI", callback_data=COMMAND_EXIT_AI)]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            
+            # Отправляем сообщение с кнопками
+            await update.message.reply_text(
+                "Вы можете продолжить общение с AI или выбрать другое действие:",
+                reply_markup=reply_markup
+            )
+            
+            # Оставляем пользователя в режиме общения с AI
+            return WAIT_AI_DESCRIPTION
+            
+        except Exception as e:
+            logger.error(f"Ошибка при обработке запроса к AI: {str(e)}")
+            await update.message.reply_text(
+                f"Произошла ошибка при обработке запроса к AI: {str(e)}. "
+                "Пожалуйста, попробуйте еще раз или выберите другое действие."
+            )
+            # Возвращаем пользователя в основное меню
+            await self._show_main_menu(update.effective_chat.id)
+            return ConversationHandler.END
 
 
 def main():

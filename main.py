@@ -17,6 +17,11 @@ from pathlib import Path
 from typing import Dict, List, Any, Optional, Union
 from dotenv import load_dotenv
 
+# Создание необходимых директорий
+os.makedirs("logs", exist_ok=True)
+os.makedirs("data", exist_ok=True)
+os.makedirs("data/notifications", exist_ok=True)
+
 # Импорт других модулей проекта
 from gdrive_integration import GoogleDriveIntegration
 from excel_editing import ExcelHandler

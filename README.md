@@ -1,10 +1,10 @@
 # Агент очереди печати с Telegram-ботом
 
-Интеллектуальный агент для автоматизации процесса формирования очереди печати на производстве. Система интегрируется с Microsoft OneDrive, обрабатывает неструктурированные описания заказов с помощью Claude 3.5 Haiku, формирует и управляет очередью печати на основании сроков и приоритетов. Взаимодействие с пользователями осуществляется через Telegram-бота.
+Интеллектуальный агент для автоматизации процесса формирования очереди печати на производстве. Система интегрируется с Google Drive, обрабатывает неструктурированные описания заказов с помощью Claude 3.5 Haiku, формирует и управляет очередью печати на основании сроков и приоритетов. Взаимодействие с пользователями осуществляется через Telegram-бота.
 
 ## Основные возможности
 
-- Подключение к Microsoft OneDrive через Microsoft Graph API
+- Подключение к Google Drive через Google Drive API
 - Обработка неструктурированных описаний заказов с помощью Claude 3.5 Haiku
 - Формирование очереди печати на основе сроков и приоритетов
 - Редактирование Excel-файлов, хранящихся в облаке
@@ -16,19 +16,20 @@
 Проект разделен на следующие модули:
 
 1. **main.py**: Основной модуль, объединяющий все компоненты
-2. **onedrive_integration.py**: Интеграция с OneDrive через Microsoft Graph API
+2. **gdrive_integration.py**: Интеграция с Google Drive через Google Drive API
 3. **data_processing.py**: Обработка неструктурированных описаний заказов с помощью Claude 3.5 Haiku
 4. **queue_formation.py**: Логика формирования и обновления очереди печати
 5. **excel_editing.py**: Чтение и запись Excel-файлов
 6. **telegram_bot.py**: Взаимодействие с пользователями через Telegram API
+7. **claude_api.py**: Клиент для работы с Claude API
 
 ## Установка
 
 ### Требования
 
 - Python 3.8 или выше
-- Зарегистрированное приложение в Microsoft Azure для доступа к Microsoft Graph API
-- API-ключ для языковой модели (Claude API или OpenAI API)
+- Учетные данные Google Drive API для доступа к Google Drive
+- API-ключ для Claude API
 
 ### Установка зависимостей
 
@@ -38,17 +39,14 @@ pip install -r requirements.txt
 
 ### Настройка конфигурации
 
-1. Скопируйте `.env.example` в `.env` и заполните необходимые переменные окружения:
+1. Создайте файл `.env` и заполните необходимые переменные окружения:
 
 ```
-AZURE_APP_ID=ваш_app_id
-AZURE_APP_SECRET=ваш_app_secret
-AZURE_TENANT_ID=ваш_tenant_id
 CLAUDE_API_KEY=ваш_claude_api_key
 TELEGRAM_BOT_TOKEN=ваш_telegram_token
 ```
 
-2. Настройте `config.yaml` в соответствии с вашими требованиями, особо обратите внимание на раздел `telegram` с настройками бота.
+2. Настройте `config.yaml` в соответствии с вашими требованиями, особо обратите внимание на разделы `telegram` и `google_drive` с настройками.
 
 ## Использование
 
@@ -64,22 +62,17 @@ python main.py
 
 Однократная обработка очереди без запуска бота:
 ```bash
-python main.py --run-once
+python main.py --process-once
 ```
 
-Скачивание файлов из OneDrive:
+Отключение мониторинга изменений файлов:
 ```bash
-python main.py --download-files
+python main.py --no-monitor
 ```
 
-Загрузка файлов в OneDrive:
+Отключение Telegram-бота:
 ```bash
-python main.py --upload-files
-```
-
-Формирование отчета об очереди:
-```bash
-python main.py --report
+python main.py --no-telegram
 ```
 
 ### Команды Telegram-бота
@@ -103,12 +96,12 @@ python main.py --report
 ├── .env                     # Переменные окружения
 ├── config.yaml              # Конфигурация приложения
 ├── main.py                  # Основной модуль
-├── onedrive_integration.py  # Интеграция с OneDrive
-├── data_processing.py       # Обработка данных с помощью LLM
+├── gdrive_integration.py    # Интеграция с Google Drive
+├── claude_api.py            # Клиент для работы с Claude API
+├── data_processing.py       # Обработка данных с помощью Claude API
 ├── queue_formation.py       # Формирование очереди
 ├── excel_editing.py         # Работа с Excel-файлами
-├── user_interface.py        # Веб-интерфейс
-├── notifications.py         # Отправка уведомлений
+├── telegram_bot.py          # Telegram-бот и уведомления
 ├── requirements.txt         # Зависимости
 ├── logs/                    # Директория для логов
 └── data/                    # Директория для данных
