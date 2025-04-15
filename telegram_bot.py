@@ -191,6 +191,7 @@ class TelegramBot:
         self.application.add_handler(CommandHandler("queue", self.cmd_queue))
         self.application.add_handler(CommandHandler("status", self.cmd_status))
         self.application.add_handler(CommandHandler("drive_test", self.cmd_drive_test))  # Добавляем команду для тестирования
+        self.application.add_handler(CommandHandler("test_document", self.cmd_test_document))  # Добавляем команду для тестирования документов
         
         # Обработчик разговора для создания нового заказа
         order_conv_handler = ConversationHandler(
@@ -457,6 +458,52 @@ class TelegramBot:
                 await msg.edit_text(error_report, parse_mode=ParseMode.MARKDOWN)
         except Exception as e:
             logger.error(f"Ошибка при тестировании Excel файлов: {str(e)}")
+            await msg.edit_text(f"❌ Произошла ошибка при тестировании: {str(e)}")
+    
+    async def cmd_test_document(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """
+        Тестирует создание текстового документа в Google Drive
+        """
+        # Отправляем сообщение о начале тестирования
+        msg = await update.message.reply_text("🔄 Начинаю тестирование создания текстового документа в Google Drive...")
+        
+        # Проверяем наличие Google Drive интеграции
+        if not hasattr(self, 'drive_integration') or not self.drive_integration:
+            await msg.edit_text("⚠️ Интеграция с Google Drive не настроена.")
+            return
+        
+        try:
+            # Запускаем тестовую функцию создания документов
+            results = self.drive_integration.create_test_document()
+            
+            if results["success"]:
+                # Формируем отчет об успешном тестировании
+                report = "✅ Тестирование создания документов в Google Drive прошло успешно!\n\n"
+                report += f"📂 Локальный файл: `{results.get('local_file', 'Н/Д')}`\n"
+                
+                if results.get("created_files"):
+                    files_str = ", ".join(results["created_files"])
+                    report += f"📤 Созданные файлы: `{files_str}`\n"
+                
+                if results.get("file_id"):
+                    report += f"🆔 ID файла: `{results.get('file_id')}`\n"
+                    
+                await msg.edit_text(report, parse_mode=ParseMode.MARKDOWN)
+            else:
+                # Формируем отчет об ошибках
+                error_report = "❌ Тестирование создания документов в Google Drive завершилось с ошибками:\n\n"
+                
+                if results.get("errors"):
+                    errors_str = "\n- ".join(results["errors"])
+                    error_report += f"Ошибки:\n- {errors_str}\n\n"
+                
+                if results.get("created_files"):
+                    files_str = ", ".join(results["created_files"])
+                    error_report += f"📤 Созданные файлы: `{files_str}`\n"
+                    
+                await msg.edit_text(error_report, parse_mode=ParseMode.MARKDOWN)
+        except Exception as e:
+            logger.error(f"Ошибка при тестировании создания документов: {str(e)}")
             await msg.edit_text(f"❌ Произошла ошибка при тестировании: {str(e)}")
     
     async def cmd_new_order(self, update: Update, context: ContextTypes.DEFAULT_TYPE):

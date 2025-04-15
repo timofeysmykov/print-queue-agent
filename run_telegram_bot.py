@@ -12,7 +12,13 @@ import signal
 from dotenv import load_dotenv
 
 # Установим рабочую директорию
-os.chdir('/opt/print-queue-agent')
+# Проверяем, существует ли директория /opt/print-queue-agent (на сервере)
+if os.path.exists('/opt/print-queue-agent'):
+    os.chdir('/opt/print-queue-agent')
+else:
+    # Если директории нет, значит мы на локальной машине
+    logger = logging.getLogger('telegram_bot_runner')
+    logger.info('Запуск в локальном режиме')
 
 # Настройка логирования
 logging.basicConfig(

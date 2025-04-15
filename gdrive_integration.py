@@ -589,6 +589,72 @@ class GoogleDriveIntegration:
                 
             return results
     
+    def create_test_document(self):
+        """
+        Создает тестовый текстовый документ в Google Drive для проверки соединения.
+        
+        Returns:
+            dict: Результаты тестирования с информацией о созданном файле
+        """
+        logger.info("Начало тестирования создания текстового документа")
+        
+        results = {
+            "success": False, 
+            "created_files": [],
+            "errors": []
+        }
+        
+        try:
+            # Создаем временную директорию для тестов
+            test_dir = Path("data/test_docs")
+            test_dir.mkdir(exist_ok=True, parents=True)
+            
+            # Создаем тестовый текстовый файл
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            txt_filename = f"test_document_{timestamp}.txt"
+            txt_path = test_dir / txt_filename
+            
+            # Содержимое тестового документа
+            content = f"""Тестовый документ для проверки соединения с Google Drive
+Создан: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
+
+Этот файл был создан автоматически для проверки работоспособности интеграции с Google Drive.
+"""
+            
+            # Записываем содержимое в файл
+            with open(txt_path, 'w', encoding='utf-8') as f:
+                f.write(content)
+                
+            logger.info(f"Создан локальный текстовый файл: {txt_path}")
+            results["local_file"] = str(txt_path)
+            
+            # Загружаем файл в Google Drive
+            upload_result = self.upload_file(txt_path, txt_filename)
+            if upload_result:
+                logger.info(f"Текстовый файл успешно загружен в Google Drive: {txt_filename}")
+                results["created_files"].append(txt_filename)
+            else:
+                logger.error("Не удалось загрузить текстовый файл в Google Drive")
+                results["errors"].append("Ошибка загрузки текстового файла")
+                return results
+            
+            # Проверяем, что файл существует в Google Drive
+            file_info = self.find_file_by_name(txt_filename)
+            if file_info:
+                logger.info(f"Файл найден в Google Drive: {file_info.get('id')}")
+                results["file_id"] = file_info.get('id')
+                results["success"] = True
+            else:
+                logger.error(f"Не удалось найти загруженный файл: {txt_filename}")
+                results["errors"].append("Ошибка поиска загруженного файла")
+                
+            return results
+            
+        except Exception as e:
+            logger.error(f"Ошибка при создании тестового документа: {str(e)}")
+            results["errors"].append(str(e))
+            return results
+    
 if __name__ == "__main__":
     # Пример использования
     try:
